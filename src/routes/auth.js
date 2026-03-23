@@ -128,19 +128,32 @@ router.post('/google', async (req, res) => {
       return res.status(401).json({ error: 'Could not retrieve email from Google token' })
     }
 
-    // Upsert user
-    let result = await query(
-      `INSERT INTO users (id, email, google_id, display_name, avatar_url, created_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
-       ON CONFLICT (email) DO UPDATE SET
-         google_id = EXCLUDED.google_id,
-         avatar_url = EXCLUDED.avatar_url,
-         last_seen_at = NOW()
-       RETURNING id, display_name`,
-      [uuidv4(), email.toLowerCase(), googleId, name || null, picture || null]
+    // Check if a user already exists with this email (e.g. registered via email/password)
+    const existing = await query(
+      'SELECT id, display_name FROM users WHERE email = $1',
+      [email.toLowerCase()]
     )
 
-    const user = result.rows[0]
+    let user
+    if (existing.rows.length > 0) {
+      // Link Google to existing account
+      const updated = await query(
+        `UPDATE users SET google_id = $1, avatar_url = $2, last_seen_at = NOW()
+         WHERE email = $3
+         RETURNING id, display_name`,
+        [googleId, picture || null, email.toLowerCase()]
+      )
+      user = updated.rows[0]
+    } else {
+      // Create new account
+      const inserted = await query(
+        `INSERT INTO users (id, email, google_id, display_name, avatar_url, created_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         RETURNING id, display_name`,
+        [uuidv4(), email.toLowerCase(), googleId, name || null, picture || null]
+      )
+      user = inserted.rows[0]
+    }
     const planResult = await query('SELECT plan FROM user_plans WHERE user_id = $1', [user.id])
     const plan = planResult.rows[0]?.plan || 'free'
     const accessToken = generateAccessToken(user.id, plan)
