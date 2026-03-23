@@ -94,7 +94,7 @@ router.post('/login', async (req, res) => {
     const accessToken = generateAccessToken(user.id, user.plan)
     const refreshToken = await generateRefreshToken(user.id)
 
-    res.json({ accessToken, refreshToken, userId: user.id, plan: user.plan, displayName: user.display_name })
+    res.json({ accessToken, refreshToken, userId: user.id, plan: user.plan, displayName: user.display_name, avatarUrl: user.avatar_url })
   } catch (err) {
     console.error('Login error:', err)
     res.status(500).json({ error: 'Login failed' })
@@ -136,12 +136,16 @@ router.post('/google', async (req, res) => {
 
     let user
     if (existing.rows.length > 0) {
-      // Link Google to existing account
+      // Link Google to existing account — only fill display_name / avatar_url if currently null
       const updated = await query(
-        `UPDATE users SET google_id = $1, avatar_url = $2, last_seen_at = NOW()
-         WHERE email = $3
-         RETURNING id, display_name`,
-        [googleId, picture || null, email.toLowerCase()]
+        `UPDATE users
+         SET google_id = $1,
+             display_name = COALESCE(NULLIF(display_name, ''), $2),
+             avatar_url   = COALESCE(NULLIF(avatar_url,   ''), $3),
+             last_seen_at = NOW()
+         WHERE email = $4
+         RETURNING id, display_name, avatar_url`,
+        [googleId, name || null, picture || null, email.toLowerCase()]
       )
       user = updated.rows[0]
     } else {
@@ -149,7 +153,7 @@ router.post('/google', async (req, res) => {
       const inserted = await query(
         `INSERT INTO users (id, email, google_id, display_name, avatar_url, created_at)
          VALUES ($1, $2, $3, $4, $5, NOW())
-         RETURNING id, display_name`,
+         RETURNING id, display_name, avatar_url`,
         [uuidv4(), email.toLowerCase(), googleId, name || null, picture || null]
       )
       user = inserted.rows[0]
@@ -159,7 +163,7 @@ router.post('/google', async (req, res) => {
     const accessToken = generateAccessToken(user.id, plan)
     const refreshToken = await generateRefreshToken(user.id)
 
-    res.json({ accessToken, refreshToken, userId: user.id, plan, displayName: user.display_name })
+    res.json({ accessToken, refreshToken, userId: user.id, plan, displayName: user.display_name, avatarUrl: user.avatar_url })
   } catch (err) {
     console.error('Google auth error:', err)
     res.status(500).json({ error: 'Google authentication failed' })
