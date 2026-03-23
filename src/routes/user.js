@@ -10,8 +10,12 @@ router.use(requireAuth)
 router.get('/profile', async (req, res) => {
   try {
     const result = await query(
-      `SELECT id, email, display_name, tagline, avatar_url, plan, created_at, last_login
-       FROM users WHERE id = $1`,
+      `SELECT u.id, u.email, u.display_name, u.tagline, u.avatar_url,
+              u.member_since, u.created_at, u.last_seen_at,
+              COALESCE(up.plan, 'free') AS plan
+       FROM users u
+       LEFT JOIN user_plans up ON up.user_id = u.id
+       WHERE u.id = $1`,
       [req.userId]
     )
     if (!result.rows[0]) return res.status(404).json({ error: 'User not found' })
@@ -30,10 +34,9 @@ router.patch('/profile', async (req, res) => {
       `UPDATE users SET
          display_name = COALESCE($1, display_name),
          tagline = COALESCE($2, tagline),
-         avatar_url = COALESCE($3, avatar_url),
-         updated_at = NOW()
+         avatar_url = COALESCE($3, avatar_url)
        WHERE id = $4
-       RETURNING id, email, display_name, tagline, avatar_url, plan`,
+       RETURNING id, email, display_name, tagline, avatar_url`,
       [display_name || null, tagline || null, avatar_url || null, req.userId]
     )
     res.json(result.rows[0])
@@ -46,9 +49,11 @@ router.patch('/profile', async (req, res) => {
 // GET /user/plan
 router.get('/plan', async (req, res) => {
   try {
-    const result = await query('SELECT plan FROM users WHERE id = $1', [req.userId])
-    if (!result.rows[0]) return res.status(404).json({ error: 'User not found' })
-    res.json({ plan: result.rows[0].plan })
+    const result = await query(
+      `SELECT COALESCE(plan, 'free') AS plan FROM user_plans WHERE user_id = $1`,
+      [req.userId]
+    )
+    res.json({ plan: result.rows[0]?.plan || 'free' })
   } catch (err) {
     console.error('GET plan error:', err)
     res.status(500).json({ error: 'Failed to fetch plan' })
@@ -64,8 +69,10 @@ router.put('/plan', async (req, res) => {
       return res.status(400).json({ error: 'Invalid plan. Must be free, starter, or pro' })
     }
     const result = await query(
-      'UPDATE users SET plan = $1, updated_at = NOW() WHERE id = $2 RETURNING plan',
-      [plan, req.userId]
+      `INSERT INTO user_plans (user_id, plan) VALUES ($1, $2)
+       ON CONFLICT (user_id) DO UPDATE SET plan = EXCLUDED.plan
+       RETURNING plan`,
+      [req.userId, plan]
     )
     res.json({ plan: result.rows[0].plan })
   } catch (err) {
