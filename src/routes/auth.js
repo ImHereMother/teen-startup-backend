@@ -130,21 +130,23 @@ router.post('/google', async (req, res) => {
 
     // Upsert user
     let result = await query(
-      `INSERT INTO users (id, email, google_id, display_name, avatar_url, plan, created_at)
-       VALUES ($1, $2, $3, $4, $5, 'free', NOW())
+      `INSERT INTO users (id, email, google_id, display_name, avatar_url, created_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())
        ON CONFLICT (email) DO UPDATE SET
          google_id = EXCLUDED.google_id,
          avatar_url = EXCLUDED.avatar_url,
          last_login = NOW()
-       RETURNING id, plan, display_name`,
+       RETURNING id, display_name`,
       [uuidv4(), email.toLowerCase(), googleId, name || null, picture || null]
     )
 
     const user = result.rows[0]
-    const accessToken = generateAccessToken(user.id, user.plan)
+    const planResult = await query('SELECT plan FROM user_plans WHERE user_id = $1', [user.id])
+    const plan = planResult.rows[0]?.plan || 'free'
+    const accessToken = generateAccessToken(user.id, plan)
     const refreshToken = await generateRefreshToken(user.id)
 
-    res.json({ accessToken, refreshToken, userId: user.id, plan: user.plan, displayName: user.display_name })
+    res.json({ accessToken, refreshToken, userId: user.id, plan, displayName: user.display_name })
   } catch (err) {
     console.error('Google auth error:', err)
     res.status(500).json({ error: 'Google authentication failed' })
@@ -161,10 +163,10 @@ router.post('/refresh', async (req, res) => {
 
     // Find unexpired sessions and check the token
     const sessions = await query(
-      `SELECT us.id, us.user_id, us.token_hash, u.plan
+      `SELECT us.id, us.user_id, us.token_hash, COALESCE(up.plan, 'free') AS plan
        FROM user_sessions us
-       JOIN users u ON u.id = us.user_id
-       WHERE us.expires_at > NOW() AND us.revoked = false`,
+       LEFT JOIN user_plans up ON up.user_id = us.user_id
+       WHERE us.expires_at > NOW()`,
       []
     )
 
@@ -181,8 +183,8 @@ router.post('/refresh', async (req, res) => {
       return res.status(401).json({ error: 'Invalid or expired refresh token' })
     }
 
-    // Revoke old session (rotation)
-    await query('UPDATE user_sessions SET revoked = true WHERE id = $1', [matchedSession.id])
+    // Delete old session (rotation)
+    await query('DELETE FROM user_sessions WHERE id = $1', [matchedSession.id])
 
     const accessToken = generateAccessToken(matchedSession.user_id, matchedSession.plan)
     const newRefreshToken = await generateRefreshToken(matchedSession.user_id)
@@ -200,12 +202,12 @@ router.post('/logout', async (req, res) => {
     const { refreshToken } = req.body
     if (refreshToken) {
       const sessions = await query(
-        `SELECT id, token_hash FROM user_sessions WHERE revoked = false AND expires_at > NOW()`
+        `SELECT id, token_hash FROM user_sessions WHERE expires_at > NOW()`
       )
       for (const session of sessions.rows) {
         const match = await bcrypt.compare(refreshToken, session.token_hash)
         if (match) {
-          await query('UPDATE user_sessions SET revoked = true WHERE id = $1', [session.id])
+          await query('DELETE FROM user_sessions WHERE id = $1', [session.id])
           break
         }
       }
@@ -245,7 +247,7 @@ router.post('/admin-login', async (req, res) => {
     if (result.rows.length === 0) {
       adminUserId = uuidv4()
       await query(
-        `INSERT INTO users (id, email, plan, created_at) VALUES ($1, $2, 'admin', NOW())`,
+        `INSERT INTO users (id, email, created_at) VALUES ($1, $2, NOW())`,
         [adminUserId, adminEmail.toLowerCase()]
       )
     } else {
