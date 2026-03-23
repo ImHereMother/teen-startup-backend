@@ -1,0 +1,55 @@
+import 'dotenv/config';
+import express from 'express';
+import helmet from 'helmet';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+
+import authRoutes  from './routes/auth.js';
+import userRoutes  from './routes/user.js';
+import aiRoutes    from './routes/ai.js';
+import adminRoutes from './routes/admin.js';
+
+const app  = express();
+const PORT = process.env.PORT || 3001;
+
+app.use(helmet());
+app.set('trust proxy', 1);
+
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:5173'],
+  credentials: true,
+}));
+
+app.use(express.json({ limit: '50kb' }));
+
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests' },
+}));
+
+app.use('/auth', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: 'Too many auth attempts' },
+}));
+
+app.use('/auth',  authRoutes);
+app.use('/user',  userRoutes);
+app.use('/ai',    aiRoutes);
+app.use('/admin', adminRoutes);
+
+app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+
+app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
+
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+app.listen(PORT, () => {
+  console.log(`Teen Startup API running on port ${PORT}`);
+});
