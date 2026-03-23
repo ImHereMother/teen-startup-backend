@@ -50,8 +50,8 @@ router.post('/register', async (req, res) => {
     const userId = uuidv4()
 
     await query(
-      `INSERT INTO users (id, email, password_hash, display_name, plan, created_at)
-       VALUES ($1, $2, $3, $4, 'free', NOW())`,
+      `INSERT INTO users (id, email, password_hash, display_name, created_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
       [userId, email.toLowerCase(), passwordHash, display_name || null]
     )
 
@@ -74,7 +74,9 @@ router.post('/login', async (req, res) => {
     }
 
     const result = await query(
-      'SELECT id, password_hash, plan, display_name FROM users WHERE email = $1',
+      `SELECT u.id, u.email, u.display_name, u.avatar_url, u.password_hash, up.plan
+       FROM users u LEFT JOIN user_plans up ON up.user_id = u.id
+       WHERE u.email = $1`,
       [email.toLowerCase()]
     )
     const user = result.rows[0]
