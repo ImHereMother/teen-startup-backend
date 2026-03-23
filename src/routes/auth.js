@@ -89,7 +89,7 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' })
     }
 
-    await query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id])
+    await query('UPDATE users SET last_seen_at = NOW() WHERE id = $1', [user.id])
 
     const accessToken = generateAccessToken(user.id, user.plan)
     const refreshToken = await generateRefreshToken(user.id)
@@ -135,7 +135,7 @@ router.post('/google', async (req, res) => {
        ON CONFLICT (email) DO UPDATE SET
          google_id = EXCLUDED.google_id,
          avatar_url = EXCLUDED.avatar_url,
-         last_login = NOW()
+         last_seen_at = NOW()
        RETURNING id, display_name`,
       [uuidv4(), email.toLowerCase(), googleId, name || null, picture || null]
     )
