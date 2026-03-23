@@ -85,7 +85,7 @@ router.put('/plan', async (req, res) => {
 router.get('/quiz', async (req, res) => {
   try {
     const result = await query(
-      'SELECT quiz_data, completed_at FROM user_quiz WHERE user_id = $1',
+      'SELECT quiz_data, completed_at FROM quiz_answers WHERE user_id = $1',
       [req.userId]
     )
     if (!result.rows[0]) return res.json({ completed: false, data: null })
@@ -101,7 +101,7 @@ router.post('/quiz', async (req, res) => {
   try {
     const { data } = req.body
     await query(
-      `INSERT INTO user_quiz (user_id, quiz_data, completed_at)
+      `INSERT INTO quiz_answers (user_id, quiz_data, completed_at)
        VALUES ($1, $2, NOW())
        ON CONFLICT (user_id) DO UPDATE SET quiz_data = $2, completed_at = NOW()`,
       [req.userId, JSON.stringify(data)]
