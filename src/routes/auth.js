@@ -9,9 +9,9 @@ const JWT_SECRET = process.env.JWT_SECRET
 const ACCESS_TOKEN_EXPIRY = '15m'
 const REFRESH_TOKEN_EXPIRY_DAYS = 30
 
-function generateAccessToken(userId, plan, admin = false) {
+function generateAccessToken(userId, plan, admin = false, userInfo = {}) {
   return jwt.sign(
-    { sub: userId, plan, admin },
+    { sub: userId, plan, admin, ...userInfo },
     JWT_SECRET,
     { expiresIn: ACCESS_TOKEN_EXPIRY }
   )
@@ -92,7 +92,11 @@ router.post('/login', async (req, res) => {
 
     await query('UPDATE users SET last_seen_at = NOW() WHERE id = $1', [user.id])
 
-    const accessToken = generateAccessToken(user.id, user.plan)
+    const accessToken = generateAccessToken(user.id, user.plan, false, {
+      email: user.email,
+      display_name: user.display_name,
+      avatar_url: user.avatar_url,
+    })
     const refreshToken = await generateRefreshToken(user.id)
 
     res.json({ accessToken, refreshToken, userId: user.id, email: user.email, plan: user.plan, displayName: user.display_name, avatarUrl: user.avatar_url, memberSince: user.member_since })
@@ -145,7 +149,7 @@ router.post('/google', async (req, res) => {
              avatar_url   = COALESCE(NULLIF(avatar_url,   ''), $3),
              last_seen_at = NOW()
          WHERE email = $4
-         RETURNING id, display_name, avatar_url`,
+         RETURNING id, email, display_name, avatar_url, member_since`,
         [googleId, name || null, picture || null, email.toLowerCase()]
       )
       user = updated.rows[0]
@@ -154,17 +158,21 @@ router.post('/google', async (req, res) => {
       const inserted = await query(
         `INSERT INTO users (id, email, google_id, display_name, avatar_url, created_at)
          VALUES ($1, $2, $3, $4, $5, NOW())
-         RETURNING id, display_name, avatar_url`,
+         RETURNING id, email, display_name, avatar_url, member_since`,
         [uuidv4(), email.toLowerCase(), googleId, name || null, picture || null]
       )
       user = inserted.rows[0]
     }
     const planResult = await query('SELECT plan FROM user_plans WHERE user_id = $1', [user.id])
     const plan = planResult.rows[0]?.plan || 'free'
-    const accessToken = generateAccessToken(user.id, plan)
+    const accessToken = generateAccessToken(user.id, plan, false, {
+      email: user.email,
+      display_name: user.display_name,
+      avatar_url: user.avatar_url,
+    })
     const refreshToken = await generateRefreshToken(user.id)
 
-    res.json({ accessToken, refreshToken, userId: user.id, plan, displayName: user.display_name, avatarUrl: user.avatar_url })
+    res.json({ accessToken, refreshToken, userId: user.id, email: user.email, plan, displayName: user.display_name, avatarUrl: user.avatar_url, memberSince: user.member_since })
   } catch (err) {
     console.error('Google auth error:', err)
     res.status(500).json({ error: 'Google authentication failed' })
