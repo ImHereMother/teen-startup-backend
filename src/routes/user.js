@@ -164,10 +164,13 @@ router.post('/favorites', async (req, res) => {
   try {
     const { idea_id } = req.body
     if (!idea_id) return res.status(400).json({ error: 'idea_id is required' })
+    // Use INSERT WHERE NOT EXISTS to avoid needing a unique constraint
     await query(
       `INSERT INTO user_favorites (user_id, idea_id, created_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (user_id, idea_id) DO NOTHING`,
+       SELECT $1, $2, NOW()
+       WHERE NOT EXISTS (
+         SELECT 1 FROM user_favorites WHERE user_id = $1 AND idea_id = $2
+       )`,
       [req.userId, idea_id]
     )
     res.status(201).json({ success: true })
@@ -213,13 +216,20 @@ router.post('/tracked', async (req, res) => {
   try {
     const { idea_id, stage_key } = req.body
     if (!idea_id) return res.status(400).json({ error: 'idea_id is required' })
-    const id = uuidv4()
+    // Try to update existing row first (avoids needing a unique constraint)
+    const updated = await query(
+      `UPDATE user_tracked SET status = 'active', updated_at = NOW()
+       WHERE user_id = $1 AND idea_id = $2 RETURNING *`,
+      [req.userId, idea_id]
+    )
+    if (updated.rows.length > 0) {
+      return res.status(201).json(updated.rows[0])
+    }
+    // No existing row — insert fresh
     const result = await query(
       `INSERT INTO user_tracked (id, user_id, idea_id, status, stage_key, started_at, updated_at)
-       VALUES ($1, $2, $3, 'active', $4, NOW(), NOW())
-       ON CONFLICT (user_id, idea_id) DO UPDATE SET status = 'active', updated_at = NOW()
-       RETURNING *`,
-      [id, req.userId, idea_id, stage_key || null]
+       VALUES ($1, $2, $3, 'active', $4, NOW(), NOW()) RETURNING *`,
+      [uuidv4(), req.userId, idea_id, stage_key || null]
     )
     res.status(201).json(result.rows[0])
   } catch (err) {
@@ -316,8 +326,10 @@ router.post('/badges', async (req, res) => {
     if (!badge_id) return res.status(400).json({ error: 'badge_id is required' })
     await query(
       `INSERT INTO user_badges (user_id, badge_id, earned_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (user_id, badge_id) DO NOTHING`,
+       SELECT $1, $2, NOW()
+       WHERE NOT EXISTS (
+         SELECT 1 FROM user_badges WHERE user_id = $1 AND badge_id = $2
+       )`,
       [req.userId, badge_id]
     )
     res.status(201).json({ success: true })
