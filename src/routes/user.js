@@ -85,11 +85,11 @@ router.put('/plan', async (req, res) => {
 router.get('/quiz', async (req, res) => {
   try {
     const result = await query(
-      'SELECT quiz_data, completed_at FROM quiz_answers WHERE user_id = $1',
+      'SELECT answers, completed_at FROM quiz_answers WHERE user_id = $1',
       [req.userId]
     )
     if (!result.rows[0]) return res.json({ completed: false, data: null })
-    res.json({ completed: true, data: result.rows[0].quiz_data, completedAt: result.rows[0].completed_at })
+    res.json({ completed: true, data: result.rows[0].answers, completedAt: result.rows[0].completed_at })
   } catch (err) {
     console.error('GET quiz error:', err)
     res.status(500).json({ error: 'Failed to fetch quiz' })
@@ -101,7 +101,7 @@ router.post('/quiz', async (req, res) => {
   try {
     const { data } = req.body
     await query(
-      `INSERT INTO quiz_answers (user_id, quiz_data, completed_at)
+      `INSERT INTO quiz_answers (user_id, answers, completed_at)
        VALUES ($1, $2, NOW())
        ON CONFLICT (user_id) DO UPDATE SET quiz_data = $2, completed_at = NOW()`,
       [req.userId, JSON.stringify(data)]
