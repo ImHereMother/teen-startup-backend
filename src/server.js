@@ -8,6 +8,7 @@ import authRoutes  from './routes/auth.js';
 import userRoutes  from './routes/user.js';
 import aiRoutes    from './routes/ai.js';
 import adminRoutes from './routes/admin.js';
+import { runMigrations } from './db.js';
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -49,6 +50,8 @@ app.use((err, _req, res, _next) => {
   console.error(err);
   res.status(500).json({ error: 'Internal server error' });
 });
+
+runMigrations().catch(err => console.error('Migration error:', err))
 
 app.listen(PORT, () => {
   console.log(`Teen Startup API running on port ${PORT}`);
