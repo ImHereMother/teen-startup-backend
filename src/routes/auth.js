@@ -81,8 +81,11 @@ router.post('/login', async (req, res) => {
       [email.toLowerCase()]
     )
     const user = result.rows[0]
-    if (!user || !user.password_hash) {
+    if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' })
+    }
+    if (!user.password_hash) {
+      return res.status(401).json({ error: 'This account uses Google Sign In. Please use the "Continue with Google" button.' })
     }
 
     const valid = await bcrypt.compare(password, user.password_hash)
