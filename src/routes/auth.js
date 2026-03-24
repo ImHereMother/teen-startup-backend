@@ -74,7 +74,8 @@ router.post('/login', async (req, res) => {
     }
 
     const result = await query(
-      `SELECT u.id, u.email, u.display_name, u.avatar_url, u.password_hash, up.plan
+      `SELECT u.id, u.email, u.display_name, u.avatar_url, u.member_since, u.password_hash,
+              COALESCE(up.plan, 'free') AS plan
        FROM users u LEFT JOIN user_plans up ON up.user_id = u.id
        WHERE u.email = $1`,
       [email.toLowerCase()]
@@ -94,7 +95,7 @@ router.post('/login', async (req, res) => {
     const accessToken = generateAccessToken(user.id, user.plan)
     const refreshToken = await generateRefreshToken(user.id)
 
-    res.json({ accessToken, refreshToken, userId: user.id, plan: user.plan, displayName: user.display_name, avatarUrl: user.avatar_url })
+    res.json({ accessToken, refreshToken, userId: user.id, email: user.email, plan: user.plan, displayName: user.display_name, avatarUrl: user.avatar_url, memberSince: user.member_since })
   } catch (err) {
     console.error('Login error:', err)
     res.status(500).json({ error: 'Login failed' })
