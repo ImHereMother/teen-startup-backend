@@ -157,6 +157,18 @@ export async function runMigrations() {
       data        JSONB,
       occurred_at TIMESTAMPTZ DEFAULT NOW()
     )`,
+
+    // AI chat messages
+    `CREATE TABLE IF NOT EXISTS ai_messages (
+      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role          TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+      content       TEXT NOT NULL,
+      model         TEXT,
+      input_tokens  INTEGER,
+      output_tokens INTEGER,
+      created_at    TIMESTAMPTZ DEFAULT NOW()
+    )`,
   ]
 
   for (const sql of migrations) {
