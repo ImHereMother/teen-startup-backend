@@ -41,9 +41,30 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters' })
     }
 
-    const existing = await query('SELECT id FROM users WHERE email = $1', [email.toLowerCase()])
+    const existing = await query(
+      'SELECT id, password_hash, display_name FROM users WHERE email = $1',
+      [email.toLowerCase()]
+    )
+
     if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'Email already registered' })
+      const existingUser = existing.rows[0]
+      if (existingUser.password_hash) {
+        return res.status(409).json({ error: 'Email already registered' })
+      }
+      // Google-only account — add a password so both login methods work
+      const passwordHash = await bcrypt.hash(password, 12)
+      await query(
+        `UPDATE users SET password_hash = $1,
+           display_name = COALESCE(NULLIF(display_name, ''), $2),
+           last_seen_at = NOW()
+         WHERE id = $3`,
+        [passwordHash, display_name || null, existingUser.id]
+      )
+      const planResult = await query('SELECT plan FROM user_plans WHERE user_id = $1', [existingUser.id])
+      const plan = planResult.rows[0]?.plan || 'free'
+      const accessToken = generateAccessToken(existingUser.id, plan, false, { email: email.toLowerCase(), display_name: existingUser.display_name })
+      const refreshToken = await generateRefreshToken(existingUser.id)
+      return res.status(201).json({ accessToken, refreshToken, userId: existingUser.id, email: email.toLowerCase(), plan, displayName: existingUser.display_name, avatarUrl: null, memberSince: null })
     }
 
     const passwordHash = await bcrypt.hash(password, 12)
@@ -156,6 +177,31 @@ router.post('/google', async (req, res) => {
         [googleId, name || null, picture || null, email.toLowerCase()]
       )
       user = updated.rows[0]
+
+      // Migrate data from any old separate Google-only account with this google_id
+      const oldAccount = await query(
+        'SELECT id FROM users WHERE google_id = $1 AND id != $2',
+        [googleId, user.id]
+      )
+      if (oldAccount.rows.length > 0) {
+        const oldId = oldAccount.rows[0].id
+        // Transfer favorites
+        await query(
+          `INSERT INTO user_favorites (user_id, idea_id, created_at)
+           SELECT $1, idea_id, created_at FROM user_favorites WHERE user_id = $2
+           ON CONFLICT (user_id, idea_id) DO NOTHING`,
+          [user.id, oldId]
+        )
+        // Transfer quiz answers if email account has none
+        await query(
+          `INSERT INTO quiz_answers (user_id, answers, completed_at)
+           SELECT $1, answers, completed_at FROM quiz_answers WHERE user_id = $2
+           ON CONFLICT (user_id) DO NOTHING`,
+          [user.id, oldId]
+        )
+        // Clear the old orphaned account's google_id so it's no longer linked
+        await query('UPDATE users SET google_id = NULL WHERE id = $1', [oldId])
+      }
     } else {
       // Create new account
       const inserted = await query(

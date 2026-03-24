@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
+import bcrypt from 'bcryptjs'
 import { query } from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 
@@ -43,6 +44,37 @@ router.patch('/profile', async (req, res) => {
   } catch (err) {
     console.error('PATCH profile error:', err)
     res.status(500).json({ error: 'Failed to update profile' })
+  }
+})
+
+// PATCH /user/password
+router.patch('/password', async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters' })
+    }
+    const result = await query('SELECT password_hash FROM users WHERE id = $1', [req.userId])
+    const user = result.rows[0]
+    if (!user) return res.status(404).json({ error: 'User not found' })
+
+    // If account already has a password, verify it first
+    if (user.password_hash) {
+      if (!currentPassword) {
+        return res.status(400).json({ error: 'Current password is required' })
+      }
+      const valid = await bcrypt.compare(currentPassword, user.password_hash)
+      if (!valid) {
+        return res.status(401).json({ error: 'Current password is incorrect' })
+      }
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 12)
+    await query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.userId])
+    res.json({ success: true })
+  } catch (err) {
+    console.error('PATCH password error:', err)
+    res.status(500).json({ error: 'Failed to update password' })
   }
 })
 
