@@ -574,4 +574,26 @@ router.post('/events', async (req, res) => {
   }
 })
 
+// GET /user/preferences
+router.get('/preferences', async (req, res) => {
+  try {
+    const result = await query('SELECT preferences FROM users WHERE id = $1', [req.userId])
+    res.json(result.rows[0]?.preferences || {})
+  } catch (err) {
+    console.error('GET preferences error:', err)
+    res.status(500).json({ error: 'Failed to fetch preferences' })
+  }
+})
+
+// PUT /user/preferences
+router.put('/preferences', async (req, res) => {
+  try {
+    await query('UPDATE users SET preferences = $1 WHERE id = $2', [JSON.stringify(req.body), req.userId])
+    res.json(req.body)
+  } catch (err) {
+    console.error('PUT preferences error:', err)
+    res.status(500).json({ error: 'Failed to save preferences' })
+  }
+})
+
 export default router

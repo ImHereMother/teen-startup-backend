@@ -97,7 +97,13 @@ router.post('/chat', async (req, res) => {
     }
 
     const aiResponse = await anthropicRes.json()
-    const assistantContent = aiResponse.content?.[0]?.text || ''
+    const rawContent = aiResponse.content?.[0]?.text || ''
+    // Strip markdown formatting so responses are always plain text
+    const assistantContent = rawContent
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/\*(.+?)\*/g, '$1')
+      .replace(/^#{1,6} /gm, '')
+      .replace(/^- /gm, '- ')
 
     // Save the assistant response
     await query(

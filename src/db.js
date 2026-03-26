@@ -174,6 +174,9 @@ export async function runMigrations() {
     `ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS model TEXT`,
     `ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS input_tokens INTEGER`,
     `ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS output_tokens INTEGER`,
+
+    // User preferences (theme, accessibility, etc.)
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS preferences JSONB DEFAULT '{}'`,
   ]
 
   for (const sql of migrations) {
