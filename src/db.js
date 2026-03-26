@@ -169,6 +169,11 @@ export async function runMigrations() {
       output_tokens INTEGER,
       created_at    TIMESTAMPTZ DEFAULT NOW()
     )`,
+
+    // Add missing columns to ai_messages if they were created before these were added
+    `ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS model TEXT`,
+    `ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS input_tokens INTEGER`,
+    `ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS output_tokens INTEGER`,
   ]
 
   for (const sql of migrations) {
