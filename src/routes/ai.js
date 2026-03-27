@@ -139,11 +139,10 @@ router.post('/chat', async (req, res) => {
 
     const aiResponse = await anthropicRes.json()
     const rawContent = aiResponse.content?.[0]?.text || ''
-    // Minimal cleanup: remove `#` header markers but keep bold/emojis
+    // Keep markdown intact — frontend renders headings and bold
+    // Only collapse excessive blank lines (3+ → 2) to keep responses tight
     const assistantContent = rawContent
-      .replace(/^#{1,6} /gm, '')
-      .replace(/\*\*(.+?)\*\*/g, '$1')
-      .replace(/\*(.+?)\*/g, '$1')
+      .replace(/\n{3,}/g, '\n\n')
       .trimEnd()
 
     // Save the assistant response

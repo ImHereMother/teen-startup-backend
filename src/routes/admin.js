@@ -452,6 +452,19 @@ router.get('/charts', async (req, res) => {
          WHERE role = 'user' AND created_at >= NOW() - INTERVAL '${interval}'
          GROUP BY 1 ORDER BY 1`,
     },
+    revenue: {
+      // Revenue from new paid signups per period (starter=$3, pro=$8)
+      sql: (trunc, interval) =>
+        `SELECT DATE_TRUNC('${trunc}', u.created_at) as date,
+                SUM(CASE WHEN up.plan = 'starter' THEN 3
+                         WHEN up.plan = 'pro'     THEN 8
+                         ELSE 0 END)::int as value
+         FROM users u
+         INNER JOIN user_plans up ON up.user_id = u.id
+         WHERE u.created_at >= NOW() - INTERVAL '${interval}'
+           AND up.plan IN ('starter', 'pro')
+         GROUP BY 1 ORDER BY 1`,
+    },
   }
 
   // Whitelist of valid ranges → trunc unit + SQL interval
