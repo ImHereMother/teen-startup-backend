@@ -24,8 +24,8 @@ router.get('/stats', async (req, res) => {
         GROUP BY COALESCE(up.plan, 'free')
         ORDER BY count DESC
       `),
-      query(`SELECT COUNT(DISTINCT user_id) as count FROM user_events WHERE created_at >= NOW() - INTERVAL '1 day'`),
-      query(`SELECT COUNT(DISTINCT user_id) as count FROM user_events WHERE created_at >= NOW() - INTERVAL '7 days'`),
+      query(`SELECT COUNT(DISTINCT user_id) as count FROM user_events WHERE occurred_at >= NOW() - INTERVAL '1 day'`),
+      query(`SELECT COUNT(DISTINCT user_id) as count FROM user_events WHERE occurred_at >= NOW() - INTERVAL '7 days'`),
       query(`SELECT type, COUNT(*) as count FROM user_events GROUP BY type ORDER BY count DESC LIMIT 10`),
       query(`SELECT COUNT(*) as total_messages,
                SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END) as user_messages,
@@ -199,9 +199,9 @@ router.get('/events', async (req, res) => {
 
     const [events, total] = await Promise.all([
       query(
-        `SELECT e.id, e.user_id, e.type, e.data, e.created_at, u.email
+        `SELECT e.id, e.user_id, e.type, e.data, e.occurred_at, u.email
          FROM user_events e LEFT JOIN users u ON u.id = e.user_id
-         ${typeFilter} ORDER BY e.created_at DESC LIMIT $1 OFFSET $2`,
+         ${typeFilter} ORDER BY e.occurred_at DESC LIMIT $1 OFFSET $2`,
         params
       ),
       query(
@@ -226,10 +226,10 @@ router.get('/events', async (req, res) => {
 router.get('/events/chart', async (req, res) => {
   try {
     const result = await query(
-      `SELECT DATE(created_at) as date, COUNT(*) as count
+      `SELECT DATE(occurred_at) as date, COUNT(*) as count
        FROM user_events
-       WHERE created_at >= NOW() - INTERVAL '30 days'
-       GROUP BY DATE(created_at)
+       WHERE occurred_at >= NOW() - INTERVAL '30 days'
+       GROUP BY DATE(occurred_at)
        ORDER BY date ASC`
     )
     res.json(result.rows)
@@ -261,19 +261,19 @@ router.get('/retention', async (req, res) => {
              JOIN users u ON u.id = e.user_id
              WHERE u.created_at >= NOW() - INTERVAL '2 days'
                AND u.created_at < NOW() - INTERVAL '1 day'
-               AND e.created_at >= NOW() - INTERVAL '1 day'`),
+               AND e.occurred_at >= NOW() - INTERVAL '1 day'`),
       query(`SELECT COUNT(DISTINCT e.user_id) as count
              FROM user_events e
              JOIN users u ON u.id = e.user_id
              WHERE u.created_at >= NOW() - INTERVAL '8 days'
                AND u.created_at < NOW() - INTERVAL '7 days'
-               AND e.created_at >= NOW() - INTERVAL '7 days'`),
+               AND e.occurred_at >= NOW() - INTERVAL '7 days'`),
       query(`SELECT COUNT(DISTINCT e.user_id) as count
              FROM user_events e
              JOIN users u ON u.id = e.user_id
              WHERE u.created_at >= NOW() - INTERVAL '31 days'
                AND u.created_at < NOW() - INTERVAL '30 days'
-               AND e.created_at >= NOW() - INTERVAL '30 days'`),
+               AND e.occurred_at >= NOW() - INTERVAL '30 days'`),
       query(`SELECT
                (SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL '2 days' AND created_at < NOW() - INTERVAL '1 day') as d1_cohort,
                (SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL '8 days' AND created_at < NOW() - INTERVAL '7 days') as d7_cohort,
