@@ -420,6 +420,66 @@ router.get('/ai-usage', async (req, res) => {
   }
 })
 
+// GET /admin/charts?metric=signups|active|events|ai&range=7d|30d|90d|6m|1y
+router.get('/charts', async (req, res) => {
+  // Whitelist of valid metric → SQL
+  const METRICS = {
+    signups: {
+      sql: (trunc, interval) =>
+        `SELECT DATE_TRUNC('${trunc}', created_at) as date, COUNT(*)::int as value
+         FROM users
+         WHERE created_at >= NOW() - INTERVAL '${interval}'
+         GROUP BY 1 ORDER BY 1`,
+    },
+    active: {
+      sql: (trunc, interval) =>
+        `SELECT DATE_TRUNC('${trunc}', occurred_at) as date, COUNT(DISTINCT user_id)::int as value
+         FROM user_events
+         WHERE occurred_at >= NOW() - INTERVAL '${interval}'
+         GROUP BY 1 ORDER BY 1`,
+    },
+    events: {
+      sql: (trunc, interval) =>
+        `SELECT DATE_TRUNC('${trunc}', occurred_at) as date, COUNT(*)::int as value
+         FROM user_events
+         WHERE occurred_at >= NOW() - INTERVAL '${interval}'
+         GROUP BY 1 ORDER BY 1`,
+    },
+    ai: {
+      sql: (trunc, interval) =>
+        `SELECT DATE_TRUNC('${trunc}', created_at) as date, COUNT(*)::int as value
+         FROM ai_messages
+         WHERE role = 'user' AND created_at >= NOW() - INTERVAL '${interval}'
+         GROUP BY 1 ORDER BY 1`,
+    },
+  }
+
+  // Whitelist of valid ranges → trunc unit + SQL interval
+  const RANGES = {
+    '7d':  { trunc: 'day',   interval: '7 days'   },
+    '30d': { trunc: 'day',   interval: '30 days'  },
+    '90d': { trunc: 'week',  interval: '90 days'  },
+    '6m':  { trunc: 'month', interval: '6 months' },
+    '1y':  { trunc: 'month', interval: '1 year'   },
+  }
+
+  const metric = req.query.metric || 'signups'
+  const range  = req.query.range  || '30d'
+
+  if (!METRICS[metric]) return res.status(400).json({ error: 'Unknown metric' })
+  if (!RANGES[range])   return res.status(400).json({ error: 'Unknown range' })
+
+  const { trunc, interval } = RANGES[range]
+
+  try {
+    const result = await query(METRICS[metric].sql(trunc, interval))
+    res.json(result.rows)
+  } catch (err) {
+    console.error('GET admin/charts error:', err)
+    res.status(500).json({ error: 'Failed to fetch chart data' })
+  }
+})
+
 // GET /admin/waitlist — landing page signups
 router.get('/waitlist', async (req, res) => {
   try {

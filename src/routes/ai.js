@@ -6,27 +6,66 @@ import { requireAuth } from '../middleware/auth.js'
 const router = Router()
 router.use(requireAuth)
 
-const STARTER_MONTHLY_LIMIT = 10
+const FREE_TOTAL_LIMIT = 3
+const STARTER_MONTHLY_LIMIT = 20
 const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001'
-const MAX_TOKENS = 500
+const MAX_TOKENS = 600
 
 function getMonthStart() {
   const now = new Date()
   return new Date(now.getFullYear(), now.getMonth(), 1)
 }
 
+// GET /ai/usage — returns current usage counts for the logged-in user
+router.get('/usage', async (req, res) => {
+  try {
+    const plan = req.userPlan
+    if (plan === 'pro') return res.json({ plan, used: 0, limit: null })
+
+    if (plan === 'starter') {
+      const monthStart = getMonthStart()
+      const result = await query(
+        `SELECT COUNT(*) as count FROM ai_messages WHERE user_id = $1 AND role = 'user' AND created_at >= $2`,
+        [req.userId, monthStart]
+      )
+      return res.json({ plan, used: parseInt(result.rows[0].count, 10), limit: STARTER_MONTHLY_LIMIT })
+    }
+
+    // free — lifetime total
+    const result = await query(
+      `SELECT COUNT(*) as count FROM ai_messages WHERE user_id = $1 AND role = 'user'`,
+      [req.userId]
+    )
+    return res.json({ plan, used: parseInt(result.rows[0].count, 10), limit: FREE_TOTAL_LIMIT })
+  } catch (err) {
+    console.error('AI usage error:', err)
+    res.status(500).json({ error: 'Failed to get usage' })
+  }
+})
+
 // POST /ai/chat
 router.post('/chat', async (req, res) => {
   try {
     const plan = req.userPlan
 
+    // Free tier: 3 lifetime messages (taste test)
     if (plan === 'free') {
-      return res.status(403).json({
-        error: 'AI chat requires Starter or Pro plan',
-        code: 'PLAN_REQUIRED',
-      })
+      const result = await query(
+        `SELECT COUNT(*) as count FROM ai_messages WHERE user_id = $1 AND role = 'user'`,
+        [req.userId]
+      )
+      const used = parseInt(result.rows[0].count, 10)
+      if (used >= FREE_TOTAL_LIMIT) {
+        return res.status(403).json({
+          error: 'Free message limit reached',
+          code: 'FREE_LIMIT_REACHED',
+          used,
+          limit: FREE_TOTAL_LIMIT,
+        })
+      }
     }
 
+    // Starter tier: 20 messages/month
     if (plan === 'starter') {
       const monthStart = getMonthStart()
       const usageResult = await query(
@@ -37,13 +76,15 @@ router.post('/chat', async (req, res) => {
       const used = parseInt(usageResult.rows[0].count, 10)
       if (used >= STARTER_MONTHLY_LIMIT) {
         return res.status(403).json({
-          error: `Monthly AI message limit reached (${STARTER_MONTHLY_LIMIT} messages). Upgrade to Pro for unlimited.`,
+          error: 'Monthly message limit reached',
           code: 'LIMIT_REACHED',
           used,
           limit: STARTER_MONTHLY_LIMIT,
         })
       }
     }
+
+    // Pro: no limit check
 
     const { messages, system } = req.body
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -98,12 +139,12 @@ router.post('/chat', async (req, res) => {
 
     const aiResponse = await anthropicRes.json()
     const rawContent = aiResponse.content?.[0]?.text || ''
-    // Strip markdown formatting so responses are always plain text
+    // Minimal cleanup: remove `#` header markers but keep bold/emojis
     const assistantContent = rawContent
+      .replace(/^#{1,6} /gm, '')
       .replace(/\*\*(.+?)\*\*/g, '$1')
       .replace(/\*(.+?)\*/g, '$1')
-      .replace(/^#{1,6} /gm, '')
-      .replace(/^- /gm, '- ')
+      .trimEnd()
 
     // Save the assistant response
     await query(

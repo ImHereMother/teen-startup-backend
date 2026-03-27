@@ -630,4 +630,28 @@ router.put('/preferences', async (req, res) => {
   }
 })
 
+// GET /user/notes
+router.get('/notes', async (req, res) => {
+  try {
+    const result = await query('SELECT notes FROM users WHERE id = $1', [req.userId])
+    res.json({ notes: result.rows[0]?.notes || '' })
+  } catch (err) {
+    console.error('GET notes error:', err)
+    res.status(500).json({ error: 'Failed to get notes' })
+  }
+})
+
+// PUT /user/notes
+router.put('/notes', async (req, res) => {
+  try {
+    const { notes } = req.body
+    if (typeof notes !== 'string') return res.status(400).json({ error: 'notes must be a string' })
+    await query('UPDATE users SET notes = $1 WHERE id = $2', [notes.slice(0, 10000), req.userId])
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('PUT notes error:', err)
+    res.status(500).json({ error: 'Failed to save notes' })
+  }
+})
+
 export default router

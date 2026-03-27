@@ -182,6 +182,9 @@ export async function runMigrations() {
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT`,
     `ALTER TABLE user_plans ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT`,
     `ALTER TABLE user_plans ADD COLUMN IF NOT EXISTS stripe_price_id TEXT`,
+
+    // Notes (Progress page)
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS notes TEXT DEFAULT ''`,
   ]
 
   for (const sql of migrations) {
