@@ -4,10 +4,11 @@ import helmet from 'helmet';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 
-import authRoutes  from './routes/auth.js';
-import userRoutes  from './routes/user.js';
-import aiRoutes    from './routes/ai.js';
-import adminRoutes from './routes/admin.js';
+import authRoutes   from './routes/auth.js';
+import userRoutes   from './routes/user.js';
+import aiRoutes     from './routes/ai.js';
+import adminRoutes  from './routes/admin.js';
+import stripeRoutes from './routes/stripe.js';
 import { runMigrations } from './db.js';
 
 const app  = express();
@@ -20,6 +21,9 @@ app.use(cors({
   origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:5173'],
   credentials: true,
 }));
+
+// Stripe webhook needs the raw body BEFORE the JSON parser touches it
+app.use('/stripe/webhook', express.raw({ type: 'application/json' }));
 
 app.use(express.json({ limit: '50kb' }));
 
@@ -37,10 +41,11 @@ app.use('/auth', rateLimit({
   message: { error: 'Too many auth attempts' },
 }));
 
-app.use('/auth',  authRoutes);
-app.use('/user',  userRoutes);
-app.use('/ai',    aiRoutes);
-app.use('/admin', adminRoutes);
+app.use('/auth',   authRoutes);
+app.use('/user',   userRoutes);
+app.use('/ai',     aiRoutes);
+app.use('/admin',  adminRoutes);
+app.use('/stripe', stripeRoutes);
 
 app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 

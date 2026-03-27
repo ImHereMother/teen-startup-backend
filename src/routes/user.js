@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid'
 import bcrypt from 'bcryptjs'
 import { query } from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
+import { cancelSubscription } from '../stripe.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -110,6 +111,39 @@ router.put('/plan', async (req, res) => {
   } catch (err) {
     console.error('PUT plan error:', err)
     res.status(500).json({ error: 'Failed to update plan' })
+  }
+})
+
+// POST /user/plan/cancel — cancel Stripe subscription + downgrade to free
+// Called when user deliberately cancels/downgrades their paid plan.
+router.post('/plan/cancel', async (req, res) => {
+  try {
+    // Get the user's current Stripe subscription ID
+    const result = await query(
+      'SELECT stripe_subscription_id FROM user_plans WHERE user_id = $1',
+      [req.userId]
+    )
+    const subscriptionId = result.rows[0]?.stripe_subscription_id
+
+    // Cancel in Stripe (non-blocking — we always update DB regardless)
+    const cancelled = await cancelSubscription(subscriptionId)
+
+    // Set plan to free and clear Stripe IDs in DB
+    await query(
+      `INSERT INTO user_plans (user_id, plan, stripe_subscription_id, stripe_price_id, updated_at)
+       VALUES ($1, 'free', NULL, NULL, NOW())
+       ON CONFLICT (user_id) DO UPDATE
+         SET plan = 'free',
+             stripe_subscription_id = NULL,
+             stripe_price_id = NULL,
+             updated_at = NOW()`,
+      [req.userId]
+    )
+
+    res.json({ plan: 'free', subscriptionCancelled: cancelled })
+  } catch (err) {
+    console.error('POST plan/cancel error:', err)
+    res.status(500).json({ error: 'Failed to cancel plan' })
   }
 })
 

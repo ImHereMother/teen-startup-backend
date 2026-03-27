@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { query } from '../db.js'
 import { requireAdmin } from '../middleware/auth.js'
+import { cancelSubscription } from '../stripe.js'
 
 const router = Router()
 router.use(requireAdmin)
@@ -160,15 +161,39 @@ router.patch('/users/:id/plan', async (req, res) => {
     const userCheck = await query('SELECT id, email FROM users WHERE id = $1', [req.params.id])
     if (!userCheck.rows[0]) return res.status(404).json({ error: 'User not found' })
 
-    // Upsert into user_plans
-    await query(
-      `INSERT INTO user_plans (user_id, plan, updated_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (user_id) DO UPDATE SET plan = $2, updated_at = NOW()`,
-      [req.params.id, plan]
-    )
+    let subscriptionCancelled = false
 
-    res.json({ id: req.params.id, email: userCheck.rows[0].email, plan })
+    // When force-downgrading to free, cancel their Stripe subscription
+    if (plan === 'free') {
+      const subResult = await query(
+        'SELECT stripe_subscription_id FROM user_plans WHERE user_id = $1',
+        [req.params.id]
+      )
+      const subscriptionId = subResult.rows[0]?.stripe_subscription_id
+      subscriptionCancelled = await cancelSubscription(subscriptionId)
+
+      // Clear Stripe fields when going to free
+      await query(
+        `INSERT INTO user_plans (user_id, plan, stripe_subscription_id, stripe_price_id, updated_at)
+         VALUES ($1, 'free', NULL, NULL, NOW())
+         ON CONFLICT (user_id) DO UPDATE
+           SET plan = 'free',
+               stripe_subscription_id = NULL,
+               stripe_price_id = NULL,
+               updated_at = NOW()`,
+        [req.params.id]
+      )
+    } else {
+      // Paid plan override (admin granting access) — don't touch Stripe fields
+      await query(
+        `INSERT INTO user_plans (user_id, plan, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (user_id) DO UPDATE SET plan = $2, updated_at = NOW()`,
+        [req.params.id, plan]
+      )
+    }
+
+    res.json({ id: req.params.id, email: userCheck.rows[0].email, plan, subscriptionCancelled })
   } catch (err) {
     console.error('PATCH admin/users/:id/plan error:', err)
     res.status(500).json({ error: 'Failed to update plan' })
@@ -178,9 +203,21 @@ router.patch('/users/:id/plan', async (req, res) => {
 // DELETE /admin/users/:id
 router.delete('/users/:id', async (req, res) => {
   try {
+    // Fetch Stripe subscription before deleting (cascade will wipe user_plans)
+    const subResult = await query(
+      'SELECT stripe_subscription_id FROM user_plans WHERE user_id = $1',
+      [req.params.id]
+    )
+    const subscriptionId = subResult.rows[0]?.stripe_subscription_id
+
+    // Cancel Stripe subscription so the user stops being charged
+    const subscriptionCancelled = await cancelSubscription(subscriptionId)
+
+    // Delete user (cascades to all child tables via ON DELETE CASCADE)
     const result = await query('DELETE FROM users WHERE id = $1 RETURNING id', [req.params.id])
     if (!result.rows[0]) return res.status(404).json({ error: 'User not found' })
-    res.json({ success: true, deleted: result.rows[0].id })
+
+    res.json({ success: true, deleted: result.rows[0].id, subscriptionCancelled })
   } catch (err) {
     console.error('DELETE admin/users/:id error:', err)
     res.status(500).json({ error: 'Failed to delete user' })

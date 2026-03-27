@@ -177,6 +177,11 @@ export async function runMigrations() {
 
     // User preferences (theme, accessibility, etc.)
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS preferences JSONB DEFAULT '{}'`,
+
+    // Stripe billing columns
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT`,
+    `ALTER TABLE user_plans ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT`,
+    `ALTER TABLE user_plans ADD COLUMN IF NOT EXISTS stripe_price_id TEXT`,
   ]
 
   for (const sql of migrations) {
