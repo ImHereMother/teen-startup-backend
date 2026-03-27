@@ -185,6 +185,18 @@ export async function runMigrations() {
 
     // Notes (Progress page)
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS notes TEXT DEFAULT ''`,
+
+    // Feedback (bug reports + idea suggestions from app and landing page)
+    `CREATE TABLE IF NOT EXISTS feedback (
+      id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      type       TEXT NOT NULL CHECK (type IN ('bug', 'idea')),
+      message    TEXT NOT NULL,
+      user_id    UUID REFERENCES users(id) ON DELETE SET NULL,
+      email      TEXT,
+      status     TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'reviewed')),
+      source     TEXT NOT NULL DEFAULT 'app',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
   ]
 
   for (const sql of migrations) {

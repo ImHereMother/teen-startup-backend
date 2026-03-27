@@ -493,6 +493,65 @@ router.get('/charts', async (req, res) => {
   }
 })
 
+// GET /admin/feedback — bug reports & idea suggestions
+router.get('/feedback', async (req, res) => {
+  try {
+    const page   = Math.max(1, parseInt(req.query.page)  || 1)
+    const limit  = Math.min(100, parseInt(req.query.limit) || 50)
+    const offset = (page - 1) * limit
+
+    const conditions  = []
+    const filterVals  = []
+
+    if (req.query.type)   { filterVals.push(req.query.type);   conditions.push(`f.type = $${filterVals.length}`) }
+    if (req.query.status) { filterVals.push(req.query.status); conditions.push(`f.status = $${filterVals.length}`) }
+
+    const whereSQL = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const n = filterVals.length
+
+    const [rows, countRow] = await Promise.all([
+      query(
+        `SELECT f.id, f.type, f.message, f.email, f.status, f.source, f.created_at,
+                u.email AS user_email, u.display_name
+         FROM feedback f
+         LEFT JOIN users u ON u.id = f.user_id
+         ${whereSQL}
+         ORDER BY f.created_at DESC
+         LIMIT $${n + 1} OFFSET $${n + 2}`,
+        [...filterVals, limit, offset]
+      ),
+      query(
+        `SELECT COUNT(*)::int AS total FROM feedback f ${whereSQL}`,
+        filterVals
+      ),
+    ])
+
+    res.json({ feedback: rows.rows, total: countRow.rows[0]?.total || 0, page, limit })
+  } catch (err) {
+    console.error('GET admin/feedback error:', err)
+    res.status(500).json({ error: 'Failed to fetch feedback' })
+  }
+})
+
+// PATCH /admin/feedback/:id/status — mark as new or reviewed
+router.patch('/feedback/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body
+    if (!['new', 'reviewed'].includes(status)) {
+      return res.status(400).json({ error: 'status must be "new" or "reviewed"' })
+    }
+    const result = await query(
+      `UPDATE feedback SET status = $1 WHERE id = $2 RETURNING id`,
+      [status, req.params.id]
+    )
+    if (!result.rows[0]) return res.status(404).json({ error: 'Feedback not found' })
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('PATCH admin/feedback/:id/status error:', err)
+    res.status(500).json({ error: 'Failed to update status' })
+  }
+})
+
 // GET /admin/waitlist — landing page signups
 router.get('/waitlist', async (req, res) => {
   try {
