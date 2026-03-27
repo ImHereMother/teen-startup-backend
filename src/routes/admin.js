@@ -65,6 +65,11 @@ router.get('/users', async (req, res) => {
     const offset = (page - 1) * limit
     const search = req.query.search || ''
 
+    // Whitelist sortable columns to prevent SQL injection
+    const SORT_COLS = { email: 'u.email', display_name: 'u.display_name', plan: 'COALESCE(up.plan,\'free\')', created_at: 'u.created_at', last_seen_at: 'u.last_seen_at' }
+    const sortBy  = SORT_COLS[req.query.sortBy]  || 'u.created_at'
+    const sortDir = req.query.sortDir === 'asc'  ? 'ASC' : 'DESC'
+
     let whereClause = ''
     const listParams = [limit, offset]
     const countParams = []
@@ -82,7 +87,7 @@ router.get('/users', async (req, res) => {
          FROM users u
          LEFT JOIN user_plans up ON up.user_id = u.id
          ${whereClause}
-         ORDER BY u.created_at DESC LIMIT $1 OFFSET $2`,
+         ORDER BY ${sortBy} ${sortDir} LIMIT $1 OFFSET $2`,
         listParams
       ),
       query(
