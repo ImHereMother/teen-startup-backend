@@ -378,4 +378,28 @@ router.get('/ai-usage', async (req, res) => {
   }
 })
 
+// GET /admin/waitlist — landing page signups
+router.get('/waitlist', async (req, res) => {
+  try {
+    const page  = Math.max(1, parseInt(req.query.page)  || 1)
+    const limit = Math.min(100, parseInt(req.query.limit) || 50)
+    const offset = (page - 1) * limit
+
+    const [rows, countRow] = await Promise.all([
+      query(
+        `SELECT id, email, created_at FROM waitlist ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      ),
+      query(`SELECT COUNT(*)::int as total FROM waitlist`),
+    ])
+
+    res.json({ signups: rows.rows, total: countRow.rows[0]?.total || 0 })
+  } catch (err) {
+    // Table might not exist yet
+    if (err.code === '42P01') return res.json({ signups: [], total: 0 })
+    console.error('GET admin/waitlist error:', err)
+    res.status(500).json({ error: 'Failed to fetch waitlist' })
+  }
+})
+
 export default router
