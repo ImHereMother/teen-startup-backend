@@ -17,7 +17,13 @@ router.get('/stats', async (req, res) => {
       aiUsage,
     ] = await Promise.all([
       query('SELECT COUNT(*) as count FROM users'),
-      query(`SELECT plan, COUNT(*) as count FROM users GROUP BY plan ORDER BY count DESC`),
+      query(`
+        SELECT COALESCE(up.plan, 'free') as plan, COUNT(*) as count
+        FROM users u
+        LEFT JOIN user_plans up ON up.user_id = u.id
+        GROUP BY COALESCE(up.plan, 'free')
+        ORDER BY count DESC
+      `),
       query(`SELECT COUNT(DISTINCT user_id) as count FROM user_events WHERE created_at >= NOW() - INTERVAL '1 day'`),
       query(`SELECT COUNT(DISTINCT user_id) as count FROM user_events WHERE created_at >= NOW() - INTERVAL '7 days'`),
       query(`SELECT type, COUNT(*) as count FROM user_events GROUP BY type ORDER BY count DESC LIMIT 10`),
@@ -29,8 +35,8 @@ router.get('/stats', async (req, res) => {
 
     const planRevenue = {
       free: 0,
-      starter: 4.99,
-      pro: 12.99,
+      starter: 3,
+      pro: 8,
     }
     const mrr = planBreakdown.rows.reduce((sum, row) => {
       return sum + (planRevenue[row.plan] || 0) * parseInt(row.count, 10)
@@ -60,22 +66,28 @@ router.get('/users', async (req, res) => {
     const search = req.query.search || ''
 
     let whereClause = ''
-    const params = [limit, offset]
+    const listParams = [limit, offset]
+    const countParams = []
 
     if (search) {
-      params.push(`%${search}%`)
-      whereClause = `WHERE email ILIKE $${params.length} OR display_name ILIKE $${params.length}`
+      listParams.push(`%${search}%`)
+      countParams.push(`%${search}%`)
+      whereClause = `WHERE (u.email ILIKE $${listParams.length} OR u.display_name ILIKE $${listParams.length})`
     }
 
     const [users, total] = await Promise.all([
       query(
-        `SELECT id, email, display_name, plan, created_at, last_login
-         FROM users ${whereClause} ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-        params
+        `SELECT u.id, u.email, u.display_name, COALESCE(up.plan, 'free') as plan,
+                u.created_at, u.last_seen_at
+         FROM users u
+         LEFT JOIN user_plans up ON up.user_id = u.id
+         ${whereClause}
+         ORDER BY u.created_at DESC LIMIT $1 OFFSET $2`,
+        listParams
       ),
       query(
-        `SELECT COUNT(*) as count FROM users ${whereClause}`,
-        search ? [params[params.length - 1]] : []
+        `SELECT COUNT(*) as count FROM users u ${whereClause}`,
+        countParams
       ),
     ])
 
@@ -96,7 +108,13 @@ router.get('/users', async (req, res) => {
 router.get('/users/:id', async (req, res) => {
   try {
     const [user, events, aiMessages, favorites, tracked] = await Promise.all([
-      query('SELECT * FROM users WHERE id = $1', [req.params.id]),
+      query(
+        `SELECT u.*, COALESCE(up.plan, 'free') as plan
+         FROM users u
+         LEFT JOIN user_plans up ON up.user_id = u.id
+         WHERE u.id = $1`,
+        [req.params.id]
+      ),
       query(
         `SELECT type, COUNT(*) as count FROM user_events WHERE user_id = $1 GROUP BY type ORDER BY count DESC`,
         [req.params.id]
@@ -132,12 +150,20 @@ router.patch('/users/:id/plan', async (req, res) => {
     if (!valid.includes(plan)) {
       return res.status(400).json({ error: 'Invalid plan' })
     }
-    const result = await query(
-      'UPDATE users SET plan = $1, updated_at = NOW() WHERE id = $2 RETURNING id, email, plan',
-      [plan, req.params.id]
+
+    // Check user exists
+    const userCheck = await query('SELECT id, email FROM users WHERE id = $1', [req.params.id])
+    if (!userCheck.rows[0]) return res.status(404).json({ error: 'User not found' })
+
+    // Upsert into user_plans
+    await query(
+      `INSERT INTO user_plans (user_id, plan, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (user_id) DO UPDATE SET plan = $2, updated_at = NOW()`,
+      [req.params.id, plan]
     )
-    if (!result.rows[0]) return res.status(404).json({ error: 'User not found' })
-    res.json(result.rows[0])
+
+    res.json({ id: req.params.id, email: userCheck.rows[0].email, plan })
   } catch (err) {
     console.error('PATCH admin/users/:id/plan error:', err)
     res.status(500).json({ error: 'Failed to update plan' })
@@ -284,10 +310,13 @@ router.get('/retention', async (req, res) => {
 // GET /admin/revenue — MRR by plan
 router.get('/revenue', async (req, res) => {
   try {
-    const planPrices = { free: 0, starter: 4.99, pro: 12.99 }
+    const planPrices = { free: 0, starter: 3, pro: 8 }
 
     const result = await query(
-      `SELECT plan, COUNT(*) as users FROM users GROUP BY plan`
+      `SELECT COALESCE(up.plan, 'free') as plan, COUNT(*) as users
+       FROM users u
+       LEFT JOIN user_plans up ON up.user_id = u.id
+       GROUP BY COALESCE(up.plan, 'free')`
     )
 
     const breakdown = result.rows.map(row => ({
@@ -320,10 +349,12 @@ router.get('/ai-usage', async (req, res) => {
                SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
                SUM(COALESCE(output_tokens, 0)) as total_output_tokens
              FROM ai_messages`),
-      query(`SELECT u.plan, COUNT(m.id) as messages, COUNT(DISTINCT m.user_id) as users
-             FROM ai_messages m JOIN users u ON u.id = m.user_id
+      query(`SELECT COALESCE(up.plan, 'free') as plan, COUNT(m.id) as messages, COUNT(DISTINCT m.user_id) as users
+             FROM ai_messages m
+             JOIN users u ON u.id = m.user_id
+             LEFT JOIN user_plans up ON up.user_id = u.id
              WHERE m.role = 'user'
-             GROUP BY u.plan ORDER BY messages DESC`),
+             GROUP BY COALESCE(up.plan, 'free') ORDER BY messages DESC`),
       query(`SELECT m.user_id, u.email, COUNT(*) as messages
              FROM ai_messages m JOIN users u ON u.id = m.user_id
              WHERE m.role = 'user'
