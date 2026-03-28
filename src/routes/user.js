@@ -619,11 +619,14 @@ router.get('/preferences', async (req, res) => {
   }
 })
 
-// PUT /user/preferences
+// PUT /user/preferences — deep-merges with existing so partial saves don't wipe other keys
 router.put('/preferences', async (req, res) => {
   try {
-    await query('UPDATE users SET preferences = $1 WHERE id = $2', [JSON.stringify(req.body), req.userId])
-    res.json(req.body)
+    const current  = await query('SELECT preferences FROM users WHERE id = $1', [req.userId])
+    const existing = current.rows[0]?.preferences || {}
+    const merged   = { ...existing, ...req.body }
+    await query('UPDATE users SET preferences = $1 WHERE id = $2', [JSON.stringify(merged), req.userId])
+    res.json(merged)
   } catch (err) {
     console.error('PUT preferences error:', err)
     res.status(500).json({ error: 'Failed to save preferences' })
