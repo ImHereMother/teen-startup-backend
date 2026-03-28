@@ -197,6 +197,18 @@ export async function runMigrations() {
       source     TEXT NOT NULL DEFAULT 'app',
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`,
+
+    // Conversations — groups AI messages into named chat sessions
+    `CREATE TABLE IF NOT EXISTS conversations (
+      id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title      TEXT NOT NULL DEFAULT 'New Chat',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+
+    // Link each AI message to a conversation
+    `ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL`,
   ]
 
   for (const sql of migrations) {

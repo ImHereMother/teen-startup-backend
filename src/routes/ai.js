@@ -6,17 +6,17 @@ import { requireAuth } from '../middleware/auth.js'
 const router = Router()
 router.use(requireAuth)
 
-const FREE_TOTAL_LIMIT = 3
+const FREE_TOTAL_LIMIT     = 3
 const STARTER_MONTHLY_LIMIT = 20
-const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001'
-const MAX_TOKENS = 600
+const ANTHROPIC_MODEL      = 'claude-haiku-4-5-20251001'
+const MAX_TOKENS           = 600
 
 function getMonthStart() {
   const now = new Date()
   return new Date(now.getFullYear(), now.getMonth(), 1)
 }
 
-// GET /ai/usage — returns current usage counts for the logged-in user
+/* ── GET /ai/usage ──────────────────────────────────────── */
 router.get('/usage', async (req, res) => {
   try {
     const plan = req.userPlan
@@ -43,7 +43,107 @@ router.get('/usage', async (req, res) => {
   }
 })
 
-// POST /ai/chat
+/* ── GET /ai/conversations ──────────────────────────────── */
+// Starter: last 7 days  |  Pro: all  |  Free: []
+router.get('/conversations', async (req, res) => {
+  const plan = req.userPlan
+  if (plan === 'free') return res.json([])
+
+  try {
+    const dateClause = plan === 'starter'
+      ? `AND c.updated_at >= NOW() - INTERVAL '7 days'`
+      : ''
+
+    const result = await query(
+      `SELECT c.id, c.title, c.created_at, c.updated_at,
+              (SELECT m.content FROM ai_messages m
+               WHERE m.conversation_id = c.id AND m.role = 'user'
+               ORDER BY m.created_at DESC LIMIT 1) AS last_message
+       FROM conversations c
+       WHERE c.user_id = $1 ${dateClause}
+       ORDER BY c.updated_at DESC
+       LIMIT 100`,
+      [req.userId]
+    )
+    res.json(result.rows)
+  } catch (err) {
+    console.error('List conversations error:', err)
+    res.status(500).json({ error: 'Failed to list conversations' })
+  }
+})
+
+/* ── POST /ai/conversations ─────────────────────────────── */
+router.post('/conversations', async (req, res) => {
+  const plan = req.userPlan
+  if (plan === 'free') return res.status(403).json({ error: 'Conversations not available on free plan' })
+
+  try {
+    const result = await query(
+      `INSERT INTO conversations (id, user_id, title) VALUES ($1, $2, 'New Chat')
+       RETURNING id, title, created_at, updated_at`,
+      [uuidv4(), req.userId]
+    )
+    res.json(result.rows[0])
+  } catch (err) {
+    console.error('Create conversation error:', err)
+    res.status(500).json({ error: 'Failed to create conversation' })
+  }
+})
+
+/* ── GET /ai/conversations/:id/messages ─────────────────── */
+router.get('/conversations/:id/messages', async (req, res) => {
+  const plan = req.userPlan
+  if (plan === 'free') return res.status(403).json({ error: 'History not available on free plan' })
+
+  try {
+    // Verify ownership
+    const convResult = await query(
+      `SELECT id, user_id, created_at FROM conversations WHERE id = $1`,
+      [req.params.id]
+    )
+    const conv = convResult.rows[0]
+    if (!conv) return res.status(404).json({ error: 'Conversation not found' })
+    if (conv.user_id !== req.userId) return res.status(403).json({ error: 'Forbidden' })
+
+    // Starter: only conversations from last 7 days
+    if (plan === 'starter') {
+      const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+      if (new Date(conv.created_at) < cutoff) {
+        return res.status(403).json({ error: 'Conversation outside your 7-day history window' })
+      }
+    }
+
+    const messages = await query(
+      `SELECT id, role, content, created_at FROM ai_messages
+       WHERE conversation_id = $1 ORDER BY created_at ASC`,
+      [req.params.id]
+    )
+    res.json(messages.rows)
+  } catch (err) {
+    console.error('Get conversation messages error:', err)
+    res.status(500).json({ error: 'Failed to get messages' })
+  }
+})
+
+/* ── DELETE /ai/conversations/:id ───────────────────────── */
+router.delete('/conversations/:id', async (req, res) => {
+  const plan = req.userPlan
+  if (plan === 'free') return res.status(403).json({ error: 'Not available on free plan' })
+
+  try {
+    const result = await query(
+      `DELETE FROM conversations WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [req.params.id, req.userId]
+    )
+    if (!result.rows[0]) return res.status(404).json({ error: 'Not found' })
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Delete conversation error:', err)
+    res.status(500).json({ error: 'Failed to delete conversation' })
+  }
+})
+
+/* ── POST /ai/chat ──────────────────────────────────────── */
 router.post('/chat', async (req, res) => {
   try {
     const plan = req.userPlan
@@ -86,12 +186,11 @@ router.post('/chat', async (req, res) => {
 
     // Pro: no limit check
 
-    const { messages, system } = req.body
+    const { messages, system, conversation_id } = req.body
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages array is required' })
     }
 
-    // Validate messages format
     for (const msg of messages) {
       if (!['user', 'assistant'].includes(msg.role) || typeof msg.content !== 'string') {
         return res.status(400).json({ error: 'Invalid message format' })
@@ -103,22 +202,29 @@ router.post('/chat', async (req, res) => {
       return res.status(503).json({ error: 'AI service not configured' })
     }
 
-    // Save the user message
+    // Save the user message (with conversation_id if provided)
     const userMessage = messages[messages.length - 1]
     if (userMessage.role === 'user') {
       await query(
-        `INSERT INTO ai_messages (id, user_id, role, content, created_at)
-         VALUES ($1, $2, 'user', $3, NOW())`,
-        [uuidv4(), req.userId, userMessage.content.slice(0, 4000)]
+        `INSERT INTO ai_messages (id, user_id, role, content, conversation_id, created_at)
+         VALUES ($1, $2, 'user', $3, $4, NOW())`,
+        [uuidv4(), req.userId, userMessage.content.slice(0, 4000), conversation_id || null]
       )
+
+      // Auto-set conversation title from the first user message
+      if (conversation_id) {
+        await query(
+          `UPDATE conversations
+           SET title      = CASE WHEN title = 'New Chat' THEN $1 ELSE title END,
+               updated_at = NOW()
+           WHERE id = $2 AND user_id = $3`,
+          [userMessage.content.slice(0, 50), conversation_id, req.userId]
+        )
+      }
     }
 
     // Call Anthropic API
-    const body = {
-      model: ANTHROPIC_MODEL,
-      max_tokens: MAX_TOKENS,
-      messages,
-    }
+    const body = { model: ANTHROPIC_MODEL, max_tokens: MAX_TOKENS, messages }
     if (system) body.system = system
 
     const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
@@ -145,24 +251,22 @@ router.post('/chat', async (req, res) => {
       .replace(/\n{3,}/g, '\n\n')
       .trimEnd()
 
-    // Save the assistant response
+    // Save the assistant response (with conversation_id)
     await query(
-      `INSERT INTO ai_messages (id, user_id, role, content, model, input_tokens, output_tokens, created_at)
-       VALUES ($1, $2, 'assistant', $3, $4, $5, $6, NOW())`,
+      `INSERT INTO ai_messages (id, user_id, role, content, model, input_tokens, output_tokens, conversation_id, created_at)
+       VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7, NOW())`,
       [
         uuidv4(),
         req.userId,
         assistantContent.slice(0, 4000),
         ANTHROPIC_MODEL,
-        aiResponse.usage?.input_tokens || 0,
+        aiResponse.usage?.input_tokens  || 0,
         aiResponse.usage?.output_tokens || 0,
+        conversation_id || null,
       ]
     )
 
-    res.json({
-      content: assistantContent,
-      usage: aiResponse.usage,
-    })
+    res.json({ content: assistantContent, usage: aiResponse.usage })
   } catch (err) {
     console.error('AI chat error:', err)
     res.status(500).json({ error: 'Failed to process AI request' })
