@@ -234,6 +234,16 @@ export async function runMigrations() {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )`,
+
+    // Landing page waitlist signups (shared Neon DB)
+    `CREATE TABLE IF NOT EXISTS waitlist (
+      id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email      TEXT UNIQUE NOT NULL,
+      type       TEXT NOT NULL DEFAULT 'waitlist',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    // Backfill type column on tables created before it was added
+    `ALTER TABLE waitlist ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'waitlist'`,
   ]
 
   for (const sql of migrations) {
