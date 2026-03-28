@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import { query } from '../db.js'
-import { optionalAuth } from '../middleware/auth.js'
+import { optionalAuth, requireAuth } from '../middleware/auth.js'
 
 const router = Router()
 
@@ -68,6 +68,24 @@ router.post('/', optionalAuth, async (req, res) => {
   } catch (err) {
     console.error('POST /featured error:', err)
     res.status(500).json({ error: 'Failed to submit' })
+  }
+})
+
+/* ── GET /featured/my — the logged-in user's own submissions ─ */
+router.get('/my', requireAuth, async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT id, idea_id, name, tagline, status, created_at
+       FROM featured_submissions
+       WHERE user_id = $1
+       ORDER BY created_at DESC
+       LIMIT 10`,
+      [req.userId]
+    )
+    res.json(result.rows)
+  } catch (err) {
+    console.error('GET /featured/my error:', err)
+    res.status(500).json({ error: 'Failed to fetch' })
   }
 })
 
