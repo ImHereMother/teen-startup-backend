@@ -654,4 +654,24 @@ router.put('/notes', async (req, res) => {
   }
 })
 
+// PUT /user/rating — upsert star rating (1-5)
+router.put('/rating', async (req, res) => {
+  try {
+    const { stars } = req.body
+    if (!Number.isInteger(stars) || stars < 1 || stars > 5) {
+      return res.status(400).json({ error: 'stars must be an integer 1-5' })
+    }
+    await query(
+      `INSERT INTO user_ratings (user_id, stars, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (user_id) DO UPDATE SET stars = $2, updated_at = NOW()`,
+      [req.userId, stars]
+    )
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('PUT /user/rating error:', err)
+    res.status(500).json({ error: 'Failed to save rating' })
+  }
+})
+
 export default router

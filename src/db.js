@@ -223,6 +223,14 @@ export async function runMigrations() {
       email       TEXT,
       created_at  TIMESTAMPTZ DEFAULT NOW()
     )`,
+
+    // App star ratings — one per user (upsert)
+    `CREATE TABLE IF NOT EXISTS user_ratings (
+      user_id    UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      stars      INTEGER NOT NULL CHECK (stars BETWEEN 1 AND 5),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
   ]
 
   for (const sql of migrations) {

@@ -5,6 +5,35 @@ import { optionalAuth } from '../middleware/auth.js'
 
 const router = Router()
 
+/* ── URL validator ──────────────────────────────────────── */
+function isValidLink(url) {
+  if (!url) return true
+  try {
+    const u = new URL(url)
+    if (!['http:', 'https:'].includes(u.protocol)) return false
+    if (!u.hostname.includes('.')) return false
+    if (['localhost', '127.0.0.1', '0.0.0.0'].includes(u.hostname)) return false
+    return true
+  } catch { return false }
+}
+
+/* ── GET /featured — all approved entries (for Discover page) ── */
+router.get('/', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT id, idea_id, name, handle, tagline, link, created_at
+       FROM featured_submissions
+       WHERE status = 'approved'
+       ORDER BY created_at DESC
+       LIMIT 30`
+    )
+    res.json(result.rows)
+  } catch (err) {
+    console.error('GET /featured error:', err)
+    res.status(500).json({ error: 'Failed to fetch' })
+  }
+})
+
 /* ── POST /featured — submit a "Get Featured" request ───── */
 router.post('/', optionalAuth, async (req, res) => {
   try {
@@ -15,6 +44,9 @@ router.post('/', optionalAuth, async (req, res) => {
     }
     if (name.trim().length > 80)    return res.status(400).json({ error: 'Name too long (max 80 chars)' })
     if (tagline.trim().length > 160) return res.status(400).json({ error: 'Tagline too long (max 160 chars)' })
+    if (link?.trim() && !isValidLink(link.trim())) {
+      return res.status(400).json({ error: 'Link must be a valid https:// URL' })
+    }
 
     const result = await query(
       `INSERT INTO featured_submissions (id, idea_id, name, handle, tagline, link, user_id, email)

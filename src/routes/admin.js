@@ -16,6 +16,8 @@ router.get('/stats', async (req, res) => {
       activeWeek,
       topEvents,
       aiUsage,
+      ratingStats,
+      ratingDist,
     ] = await Promise.all([
       query('SELECT COUNT(*) as count FROM users'),
       query(`
@@ -32,6 +34,8 @@ router.get('/stats', async (req, res) => {
                SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END) as user_messages,
                SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) as total_tokens
              FROM ai_messages`),
+      query(`SELECT ROUND(AVG(stars)::numeric, 1) as avg, COUNT(*) as count FROM user_ratings`),
+      query(`SELECT stars, COUNT(*) as count FROM user_ratings GROUP BY stars ORDER BY stars DESC`),
     ])
 
     const planRevenue = {
@@ -51,6 +55,9 @@ router.get('/stats', async (req, res) => {
       topEvents: topEvents.rows,
       aiUsage: aiUsage.rows[0],
       mrr: mrr.toFixed(2),
+      ratingAvg: ratingStats.rows[0]?.avg ? parseFloat(ratingStats.rows[0].avg) : null,
+      ratingCount: parseInt(ratingStats.rows[0]?.count || 0),
+      ratingDistribution: ratingDist.rows,
     })
   } catch (err) {
     console.error('GET admin/stats error:', err)
