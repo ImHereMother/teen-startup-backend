@@ -10,7 +10,8 @@ import aiRoutes       from './routes/ai.js';
 import adminRoutes    from './routes/admin.js';
 import stripeRoutes   from './routes/stripe.js';
 import feedbackRoutes  from './routes/feedback.js';
-import featuredRoutes  from './routes/featured.js';
+import featuredRoutes     from './routes/featured.js';
+import leaderboardRoutes  from './routes/leaderboard.js';
 import { runMigrations } from './db.js';
 
 const app  = express();
@@ -49,7 +50,8 @@ app.use('/ai',       aiRoutes);
 app.use('/admin',    adminRoutes);
 app.use('/stripe',   stripeRoutes);
 app.use('/feedback', feedbackRoutes);
-app.use('/featured', featuredRoutes);
+app.use('/featured',    featuredRoutes);
+app.use('/leaderboard', leaderboardRoutes);
 
 app.get('/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 
