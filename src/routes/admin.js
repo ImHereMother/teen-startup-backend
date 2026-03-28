@@ -630,22 +630,28 @@ router.patch('/featured/:id/status', async (req, res) => {
 // GET /admin/waitlist — landing page signups
 router.get('/waitlist', async (req, res) => {
   try {
-    const page  = Math.max(1, parseInt(req.query.page)  || 1)
-    const limit = Math.min(100, parseInt(req.query.limit) || 50)
+    const page   = Math.max(1, parseInt(req.query.page)  || 1)
+    const limit  = Math.min(100, parseInt(req.query.limit) || 50)
     const offset = (page - 1) * limit
+    const typeFilter = req.query.type // 'waitlist' | 'early_access' | undefined
+
+    const conditions = typeFilter ? `WHERE type = $3` : ''
+    const params = typeFilter ? [limit, offset, typeFilter] : [limit, offset]
+    const countParams = typeFilter ? [typeFilter] : []
+    const countCond   = typeFilter ? `WHERE type = $1` : ''
 
     const [rows, countRow] = await Promise.all([
       query(
-        `SELECT id, email, created_at FROM waitlist ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-        [limit, offset]
+        `SELECT id, email, type, created_at FROM waitlist ${conditions} ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+        params
       ),
-      query(`SELECT COUNT(*)::int as total FROM waitlist`),
+      query(`SELECT COUNT(*)::int as total FROM waitlist ${countCond}`, countParams),
     ])
 
     res.json({ signups: rows.rows, total: countRow.rows[0]?.total || 0 })
   } catch (err) {
-    // Table might not exist yet
-    if (err.code === '42P01') return res.json({ signups: [], total: 0 })
+    // Table might not exist yet, or type column doesn't exist yet — fall back gracefully
+    if (err.code === '42P01' || err.code === '42703') return res.json({ signups: [], total: 0 })
     console.error('GET admin/waitlist error:', err)
     res.status(500).json({ error: 'Failed to fetch waitlist' })
   }
