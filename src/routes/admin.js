@@ -552,6 +552,68 @@ router.patch('/feedback/:id/status', async (req, res) => {
   }
 })
 
+// GET /admin/featured — all featured submissions with filters
+router.get('/featured', async (req, res) => {
+  try {
+    const page   = Math.max(1, parseInt(req.query.page)  || 1)
+    const limit  = Math.min(100, parseInt(req.query.limit) || 50)
+    const offset = (page - 1) * limit
+
+    const conditions = []
+    const vals       = []
+
+    if (req.query.status) { vals.push(req.query.status); conditions.push(`fs.status = $${vals.length}`) }
+    if (req.query.idea_id) { vals.push(parseInt(req.query.idea_id, 10)); conditions.push(`fs.idea_id = $${vals.length}`) }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const n = vals.length
+
+    const [rows, countRow] = await Promise.all([
+      query(
+        `SELECT fs.id, fs.idea_id, fs.name, fs.handle, fs.tagline, fs.link,
+                fs.status, fs.email, fs.created_at,
+                u.email AS user_email, u.display_name
+         FROM featured_submissions fs
+         LEFT JOIN users u ON u.id = fs.user_id
+         ${where}
+         ORDER BY
+           CASE fs.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+           fs.created_at DESC
+         LIMIT $${n + 1} OFFSET $${n + 2}`,
+        [...vals, limit, offset]
+      ),
+      query(
+        `SELECT COUNT(*)::int AS total FROM featured_submissions fs ${where}`,
+        vals
+      ),
+    ])
+
+    res.json({ featured: rows.rows, total: countRow.rows[0]?.total || 0, page, limit })
+  } catch (err) {
+    console.error('GET admin/featured error:', err)
+    res.status(500).json({ error: 'Failed to fetch featured submissions' })
+  }
+})
+
+// PATCH /admin/featured/:id/status — approve or reject
+router.patch('/featured/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body
+    if (!['pending', 'approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'status must be pending, approved, or rejected' })
+    }
+    const result = await query(
+      `UPDATE featured_submissions SET status = $1 WHERE id = $2 RETURNING id`,
+      [status, req.params.id]
+    )
+    if (!result.rows[0]) return res.status(404).json({ error: 'Submission not found' })
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('PATCH admin/featured error:', err)
+    res.status(500).json({ error: 'Failed to update status' })
+  }
+})
+
 // GET /admin/waitlist — landing page signups
 router.get('/waitlist', async (req, res) => {
   try {

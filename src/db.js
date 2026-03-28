@@ -209,6 +209,20 @@ export async function runMigrations() {
 
     // Link each AI message to a conversation
     `ALTER TABLE ai_messages ADD COLUMN IF NOT EXISTS conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL`,
+
+    // Featured creator submissions — shown on each business idea page
+    `CREATE TABLE IF NOT EXISTS featured_submissions (
+      id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      idea_id     INTEGER NOT NULL,
+      name        TEXT NOT NULL,
+      handle      TEXT,
+      tagline     TEXT NOT NULL,
+      link        TEXT,
+      status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+      user_id     UUID REFERENCES users(id) ON DELETE SET NULL,
+      email       TEXT,
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    )`,
   ]
 
   for (const sql of migrations) {
