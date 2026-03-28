@@ -90,6 +90,70 @@ router.post('/conversations', async (req, res) => {
   }
 })
 
+/* ── POST /ai/conversations/:id/title ──────────────────── */
+// Generates a short smart title using AI (called after first exchange)
+router.post('/conversations/:id/title', async (req, res) => {
+  const plan = req.userPlan
+  if (plan === 'free') return res.status(403).json({ error: 'Not available on free plan' })
+
+  try {
+    const convResult = await query(
+      `SELECT id, user_id, title FROM conversations WHERE id = $1`,
+      [req.params.id]
+    )
+    const conv = convResult.rows[0]
+    if (!conv)                          return res.status(404).json({ error: 'Not found' })
+    if (conv.user_id !== req.userId)    return res.status(403).json({ error: 'Forbidden' })
+
+    // Grab first user + assistant message pair
+    const msgs = await query(
+      `SELECT role, content FROM ai_messages
+       WHERE conversation_id = $1 ORDER BY created_at ASC LIMIT 4`,
+      [req.params.id]
+    )
+    const firstUser = msgs.rows.find(m => m.role === 'user')?.content     || ''
+    const firstAI   = msgs.rows.find(m => m.role === 'assistant')?.content || ''
+
+    const apiKey = process.env.ANTHROPIC_API_KEY
+    if (!apiKey || !firstUser) return res.json({ title: conv.title })
+
+    const titleRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 15,
+        messages: [{
+          role: 'user',
+          content: `Create a short title (3-5 words, no quotes, no punctuation at end) for this business coaching chat:\nUser: "${firstUser.slice(0, 200)}"\nAssistant: "${firstAI.slice(0, 200)}"\nTitle only:`,
+        }],
+      }),
+    })
+
+    let title = conv.title
+    if (titleRes.ok) {
+      const titleData = await titleRes.json()
+      const generated = titleData.content?.[0]?.text?.trim().replace(/^["']|["']$/g, '')
+      if (generated && generated.length >= 3 && generated.length <= 70) {
+        title = generated
+        await query(
+          `UPDATE conversations SET title = $1 WHERE id = $2`,
+          [title, req.params.id]
+        )
+      }
+    }
+
+    res.json({ title })
+  } catch (err) {
+    console.error('Generate title error:', err)
+    res.status(500).json({ error: 'Failed to generate title' })
+  }
+})
+
 /* ── GET /ai/conversations/:id/messages ─────────────────── */
 router.get('/conversations/:id/messages', async (req, res) => {
   const plan = req.userPlan
