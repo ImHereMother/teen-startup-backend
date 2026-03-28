@@ -224,6 +224,9 @@ export async function runMigrations() {
       created_at  TIMESTAMPTZ DEFAULT NOW()
     )`,
 
+    // Multiple links on featured submissions
+    `ALTER TABLE featured_submissions ADD COLUMN IF NOT EXISTS links JSONB DEFAULT '[]'`,
+
     // App star ratings — one per user (upsert)
     `CREATE TABLE IF NOT EXISTS user_ratings (
       user_id    UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

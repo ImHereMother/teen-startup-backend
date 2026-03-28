@@ -21,9 +21,10 @@ function isValidLink(url) {
 router.get('/', async (req, res) => {
   try {
     const result = await query(
-      `SELECT id, idea_id, name, handle, tagline, link, created_at
+      `SELECT id, idea_id, name, handle, tagline, link, links, created_at
        FROM featured_submissions
        WHERE status = 'approved'
+         AND created_at >= NOW() - INTERVAL '30 days'
        ORDER BY created_at DESC
        LIMIT 30`
     )
@@ -37,7 +38,7 @@ router.get('/', async (req, res) => {
 /* ── POST /featured — submit a "Get Featured" request ───── */
 router.post('/', optionalAuth, async (req, res) => {
   try {
-    const { idea_id, name, handle, tagline, link, email } = req.body
+    const { idea_id, name, handle, tagline, link, links, email } = req.body
 
     if (!idea_id || !name?.trim() || !tagline?.trim()) {
       return res.status(400).json({ error: 'idea_id, name, and tagline are required' })
@@ -48,9 +49,18 @@ router.post('/', optionalAuth, async (req, res) => {
       return res.status(400).json({ error: 'Link must be a valid https:// URL' })
     }
 
+    // Build validated links array (up to 3, must be valid URLs)
+    const extraLinks = Array.isArray(links)
+      ? links
+          .filter(l => l?.url?.trim())
+          .map(l => ({ label: l.label?.trim() || '', url: l.url.trim() }))
+          .filter(l => isValidLink(l.url))
+          .slice(0, 3)
+      : []
+
     const result = await query(
-      `INSERT INTO featured_submissions (id, idea_id, name, handle, tagline, link, user_id, email)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO featured_submissions (id, idea_id, name, handle, tagline, link, links, user_id, email)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id`,
       [
         uuidv4(),
@@ -59,6 +69,7 @@ router.post('/', optionalAuth, async (req, res) => {
         handle?.trim() || null,
         tagline.trim(),
         link?.trim() || null,
+        JSON.stringify(extraLinks),
         req.userId || null,
         email?.trim() || null,
       ]
@@ -75,7 +86,7 @@ router.post('/', optionalAuth, async (req, res) => {
 router.get('/my', requireAuth, async (req, res) => {
   try {
     const result = await query(
-      `SELECT id, idea_id, name, tagline, status, created_at
+      `SELECT id, idea_id, name, handle, tagline, link, links, status, created_at
        FROM featured_submissions
        WHERE user_id = $1
        ORDER BY created_at DESC
@@ -96,7 +107,7 @@ router.get('/:ideaId', async (req, res) => {
     if (isNaN(ideaId)) return res.status(400).json({ error: 'Invalid idea ID' })
 
     const result = await query(
-      `SELECT id, name, handle, tagline, link, created_at
+      `SELECT id, name, handle, tagline, link, links, created_at
        FROM featured_submissions
        WHERE idea_id = $1 AND status = 'approved'
        ORDER BY created_at DESC

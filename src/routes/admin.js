@@ -569,17 +569,23 @@ router.get('/featured', async (req, res) => {
     const conditions = []
     const vals       = []
 
-    if (req.query.status) { vals.push(req.query.status); conditions.push(`fs.status = $${vals.length}`) }
-    if (req.query.idea_id) { vals.push(parseInt(req.query.idea_id, 10)); conditions.push(`fs.idea_id = $${vals.length}`) }
+    if (req.query.status)    { vals.push(req.query.status); conditions.push(`fs.status = $${vals.length}`) }
+    if (req.query.idea_id)   { vals.push(parseInt(req.query.idea_id, 10)); conditions.push(`fs.idea_id = $${vals.length}`) }
+    if (req.query.live_only) { conditions.push(`fs.created_at >= NOW() - INTERVAL '30 days'`) }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     const n = vals.length
 
     const [rows, countRow] = await Promise.all([
       query(
-        `SELECT fs.id, fs.idea_id, fs.name, fs.handle, fs.tagline, fs.link,
+        `SELECT fs.id, fs.idea_id, fs.name, fs.handle, fs.tagline, fs.link, fs.links,
                 fs.status, fs.email, fs.created_at,
-                u.email AS user_email, u.display_name
+                u.email AS user_email, u.display_name,
+                CASE
+                  WHEN fs.status = 'approved'
+                  THEN GREATEST(0, EXTRACT(EPOCH FROM (fs.created_at + INTERVAL '30 days' - NOW()))::int)
+                  ELSE NULL
+                END AS expires_in_seconds
          FROM featured_submissions fs
          LEFT JOIN users u ON u.id = fs.user_id
          ${where}
