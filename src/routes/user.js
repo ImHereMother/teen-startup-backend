@@ -677,4 +677,31 @@ router.put('/rating', async (req, res) => {
   }
 })
 
+// GET /user/referral — get referral code + stats
+router.get('/referral', async (req, res) => {
+  try {
+    // Auto-generate code if user was registered before this feature
+    let result = await query('SELECT referral_code FROM users WHERE id = $1', [req.userId])
+    if (!result.rows[0]?.referral_code) {
+      const code = req.userId.replace(/-/g, '').slice(0, 8).toUpperCase()
+      await query('UPDATE users SET referral_code = $1 WHERE id = $2', [code, req.userId])
+      result = await query('SELECT referral_code FROM users WHERE id = $1', [req.userId])
+    }
+
+    const [referred, rewards] = await Promise.all([
+      query('SELECT COUNT(*) as count FROM users WHERE referred_by = $1', [req.userId]),
+      query(`SELECT COUNT(*) as count FROM referral_rewards WHERE user_id = $1 AND status = 'pending'`, [req.userId]),
+    ])
+
+    res.json({
+      referralCode: result.rows[0].referral_code,
+      referredCount: parseInt(referred.rows[0].count, 10),
+      pendingRewards: parseInt(rewards.rows[0].count, 10),
+    })
+  } catch (err) {
+    console.error('GET /user/referral error:', err)
+    res.status(500).json({ error: 'Failed to fetch referral info' })
+  }
+})
+
 export default router

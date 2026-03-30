@@ -70,16 +70,34 @@ router.post('/register', async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 12)
     const userId = uuidv4()
 
+    // Generate a unique 8-char referral code
+    const referralCode = userId.replace(/-/g, '').slice(0, 8).toUpperCase()
+
     await query(
-      `INSERT INTO users (id, email, password_hash, display_name, created_at)
-       VALUES ($1, $2, $3, $4, NOW())`,
-      [userId, email.toLowerCase(), passwordHash, display_name || null]
+      `INSERT INTO users (id, email, password_hash, display_name, referral_code, created_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())`,
+      [userId, email.toLowerCase(), passwordHash, display_name || null, referralCode]
     )
+
+    // Track referral if a ref code was provided
+    const { ref } = req.body
+    if (ref) {
+      const refUser = await query('SELECT id FROM users WHERE referral_code = $1', [ref.toUpperCase()])
+      if (refUser.rows[0]) {
+        const referrerId = refUser.rows[0].id
+        await query('UPDATE users SET referred_by = $1 WHERE id = $2', [referrerId, userId])
+        // Create pending reward for the referrer
+        await query(
+          `INSERT INTO referral_rewards (user_id, referred_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [referrerId, userId]
+        ).catch(() => {})
+      }
+    }
 
     const accessToken = generateAccessToken(userId, 'free')
     const refreshToken = await generateRefreshToken(userId)
 
-    res.status(201).json({ accessToken, refreshToken, userId, plan: 'free' })
+    res.status(201).json({ accessToken, refreshToken, userId, plan: 'free', referralCode })
   } catch (err) {
     console.error('Register error:', err)
     res.status(500).json({ error: 'Registration failed' })

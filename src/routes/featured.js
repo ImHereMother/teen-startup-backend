@@ -100,6 +100,23 @@ router.get('/my', requireAuth, async (req, res) => {
   }
 })
 
+/* ── GET /featured/hall-of-fame — all approved entries, all time ── */
+router.get('/hall-of-fame', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT id, idea_id, name, handle, tagline, link, links, created_at
+       FROM featured_submissions
+       WHERE status = 'approved'
+       ORDER BY created_at DESC
+       LIMIT 100`
+    )
+    res.json(result.rows)
+  } catch (err) {
+    console.error('GET /featured/hall-of-fame error:', err)
+    res.status(500).json({ error: 'Failed to fetch' })
+  }
+})
+
 /* ── GET /featured/:ideaId — approved entries for one idea ─ */
 router.get('/:ideaId', async (req, res) => {
   try {

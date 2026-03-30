@@ -249,6 +249,13 @@ export async function runMigrations() {
     `ALTER TABLE user_plans ADD COLUMN IF NOT EXISTS mrr_excluded BOOLEAN DEFAULT FALSE`,
     `ALTER TABLE user_plans ADD COLUMN IF NOT EXISTS mrr_excluded_until TIMESTAMPTZ`,
 
+    // Referral codes — each user gets a unique short code for sharing
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by UUID REFERENCES users(id) ON DELETE SET NULL`,
+
+    // Referral rewards — track pending/applied free-month rewards
+    `CREATE TABLE IF NOT EXISTS referral_rewards (\n      id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n      user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n      referred_id  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n      status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'applied')),\n      created_at   TIMESTAMPTZ DEFAULT NOW(),\n      UNIQUE (referred_id)\n    )`,
+
     // MRR zero snapshots — each row is one "zero MRR" operation with undo history
     `CREATE TABLE IF NOT EXISTS mrr_snapshots (
       id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
