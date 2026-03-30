@@ -388,6 +388,103 @@ router.get('/revenue', async (req, res) => {
   }
 })
 
+// GET /admin/revenue/snapshots — list all MRR zero operations
+router.get('/revenue/snapshots', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT id, created_at, restored_at, user_count, mrr_before, changes
+       FROM mrr_snapshots ORDER BY created_at DESC`
+    )
+    res.json(result.rows)
+  } catch (err) {
+    console.error('GET admin/revenue/snapshots error:', err)
+    res.status(500).json({ error: 'Failed to fetch snapshots' })
+  }
+})
+
+// POST /admin/revenue/zero — zero all paid plans and save a snapshot
+router.post('/revenue/zero', async (req, res) => {
+  try {
+    const planPrices = { starter: 3, pro: 8 }
+
+    // Find all currently paid users
+    const paid = await query(
+      `SELECT up.user_id, u.email, up.plan
+       FROM user_plans up
+       JOIN users u ON u.id = up.user_id
+       WHERE up.plan IN ('starter', 'pro')`
+    )
+
+    if (paid.rows.length === 0) {
+      return res.status(400).json({ error: 'No paid users to zero' })
+    }
+
+    const changes = paid.rows.map(r => ({
+      user_id: r.user_id,
+      email: r.email,
+      plan_before: r.plan,
+    }))
+
+    const mrrBefore = paid.rows.reduce((sum, r) => sum + (planPrices[r.plan] || 0), 0)
+    const userIds   = paid.rows.map(r => r.user_id)
+
+    // Set all paid users to free
+    await query(
+      `UPDATE user_plans SET plan = 'free', updated_at = NOW()
+       WHERE user_id = ANY($1::uuid[])`,
+      [userIds]
+    )
+
+    // Save snapshot
+    const snap = await query(
+      `INSERT INTO mrr_snapshots (user_count, mrr_before, changes)
+       VALUES ($1, $2, $3)
+       RETURNING *`,
+      [paid.rows.length, mrrBefore.toFixed(2), JSON.stringify(changes)]
+    )
+
+    res.json({ snapshot: snap.rows[0], zeroed: paid.rows.length })
+  } catch (err) {
+    console.error('POST admin/revenue/zero error:', err)
+    res.status(500).json({ error: 'Failed to zero MRR' })
+  }
+})
+
+// POST /admin/revenue/snapshots/:id/restore — restore only the users changed in this snapshot
+router.post('/revenue/snapshots/:id/restore', async (req, res) => {
+  try {
+    const snap = await query(
+      `SELECT * FROM mrr_snapshots WHERE id = $1`,
+      [req.params.id]
+    )
+    if (snap.rows.length === 0) return res.status(404).json({ error: 'Snapshot not found' })
+
+    const { changes } = snap.rows[0]
+    if (!changes || changes.length === 0) return res.status(400).json({ error: 'Nothing to restore' })
+
+    // Restore each user to their plan_before — upsert so it works even if row was deleted
+    for (const change of changes) {
+      await query(
+        `INSERT INTO user_plans (user_id, plan, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (user_id) DO UPDATE SET plan = $2, updated_at = NOW()`,
+        [change.user_id, change.plan_before]
+      )
+    }
+
+    // Mark snapshot as restored
+    await query(
+      `UPDATE mrr_snapshots SET restored_at = NOW() WHERE id = $1`,
+      [req.params.id]
+    )
+
+    res.json({ restored: changes.length })
+  } catch (err) {
+    console.error('POST admin/revenue/snapshots restore error:', err)
+    res.status(500).json({ error: 'Failed to restore snapshot' })
+  }
+})
+
 // GET /admin/ai-usage
 router.get('/ai-usage', async (req, res) => {
   try {

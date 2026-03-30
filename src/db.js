@@ -244,6 +244,16 @@ export async function runMigrations() {
     )`,
     // Backfill type column on tables created before it was added
     `ALTER TABLE waitlist ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'waitlist'`,
+
+    // MRR zero snapshots — each row is one "zero MRR" operation with undo history
+    `CREATE TABLE IF NOT EXISTS mrr_snapshots (
+      id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      created_at  TIMESTAMPTZ DEFAULT NOW(),
+      restored_at TIMESTAMPTZ,
+      user_count  INTEGER NOT NULL DEFAULT 0,
+      mrr_before  NUMERIC(10,2) NOT NULL DEFAULT 0,
+      changes     JSONB NOT NULL DEFAULT '[]'
+    )`,
   ]
 
   for (const sql of migrations) {
