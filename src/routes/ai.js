@@ -256,7 +256,11 @@ router.post('/chat', async (req, res) => {
     }
 
     for (const msg of messages) {
-      if (!['user', 'assistant'].includes(msg.role) || typeof msg.content !== 'string') {
+      if (!['user', 'assistant'].includes(msg.role)) {
+        return res.status(400).json({ error: 'Invalid message format' })
+      }
+      // content can be a plain string OR an array of content blocks (text + image for vision)
+      if (typeof msg.content !== 'string' && !Array.isArray(msg.content)) {
         return res.status(400).json({ error: 'Invalid message format' })
       }
     }
@@ -269,10 +273,14 @@ router.post('/chat', async (req, res) => {
     // Save the user message (with conversation_id if provided)
     const userMessage = messages[messages.length - 1]
     if (userMessage.role === 'user') {
+      // Extract text for DB storage (images are not persisted)
+      const textForDb = Array.isArray(userMessage.content)
+        ? userMessage.content.filter(b => b.type === 'text').map(b => b.text).join(' ')
+        : userMessage.content
       await query(
         `INSERT INTO ai_messages (id, user_id, role, content, conversation_id, created_at)
          VALUES ($1, $2, 'user', $3, $4, NOW())`,
-        [uuidv4(), req.userId, userMessage.content.slice(0, 4000), conversation_id || null]
+        [uuidv4(), req.userId, textForDb.slice(0, 4000), conversation_id || null]
       )
 
       // Auto-set conversation title from the first user message
@@ -282,7 +290,7 @@ router.post('/chat', async (req, res) => {
            SET title      = CASE WHEN title = 'New Chat' THEN $1 ELSE title END,
                updated_at = NOW()
            WHERE id = $2 AND user_id = $3`,
-          [userMessage.content.slice(0, 50), conversation_id, req.userId]
+          [textForDb.slice(0, 50) || 'Image', conversation_id, req.userId]
         )
       }
     }
