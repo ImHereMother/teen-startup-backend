@@ -356,17 +356,21 @@ router.get('/retention', async (req, res) => {
   }
 })
 
-// GET /admin/revenue — MRR by plan
+// GET /admin/revenue — MRR by plan (excludes mrr_excluded users)
 router.get('/revenue', async (req, res) => {
   try {
     const planPrices = { free: 0, starter: 3, pro: 8 }
 
-    const result = await query(
-      `SELECT COALESCE(up.plan, 'free') as plan, COUNT(*) as users
-       FROM users u
-       LEFT JOIN user_plans up ON up.user_id = u.id
-       GROUP BY COALESCE(up.plan, 'free')`
-    )
+    const [result, excludedCount] = await Promise.all([
+      query(
+        `SELECT COALESCE(up.plan, 'free') as plan, COUNT(*) as users
+         FROM users u
+         LEFT JOIN user_plans up ON up.user_id = u.id
+         WHERE NOT COALESCE(up.mrr_excluded, FALSE)
+         GROUP BY COALESCE(up.plan, 'free')`
+      ),
+      query(`SELECT COUNT(*) as count FROM user_plans WHERE mrr_excluded = TRUE`),
+    ])
 
     const breakdown = result.rows.map(row => ({
       plan: row.plan,
@@ -381,6 +385,7 @@ router.get('/revenue', async (req, res) => {
       breakdown,
       totalMrr: totalMrr.toFixed(2),
       arr: (totalMrr * 12).toFixed(2),
+      excludedCount: parseInt(excludedCount.rows[0].count, 10),
     })
   } catch (err) {
     console.error('GET admin/revenue error:', err)
@@ -402,44 +407,97 @@ router.get('/revenue/snapshots', async (req, res) => {
   }
 })
 
-// POST /admin/revenue/zero — zero all paid plans and save a snapshot
+// GET /admin/revenue/excluded — list all users currently excluded from MRR
+router.get('/revenue/excluded', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT up.user_id, u.email, u.display_name, up.plan, up.updated_at
+       FROM user_plans up
+       JOIN users u ON u.id = up.user_id
+       WHERE up.mrr_excluded = TRUE
+       ORDER BY up.updated_at DESC`
+    )
+    res.json(result.rows)
+  } catch (err) {
+    console.error('GET admin/revenue/excluded error:', err)
+    res.status(500).json({ error: 'Failed to fetch excluded users' })
+  }
+})
+
+// POST /admin/revenue/exclude-user — exclude a specific user by email
+router.post('/revenue/exclude-user', async (req, res) => {
+  try {
+    const { email } = req.body
+    if (!email) return res.status(400).json({ error: 'Email required' })
+
+    const user = await query(`SELECT id FROM users WHERE email = $1`, [email.trim().toLowerCase()])
+    if (user.rows.length === 0) return res.status(404).json({ error: 'User not found' })
+
+    const userId = user.rows[0].id
+
+    await query(
+      `INSERT INTO user_plans (user_id, plan, mrr_excluded, updated_at)
+       VALUES ($1, 'free', TRUE, NOW())
+       ON CONFLICT (user_id) DO UPDATE SET mrr_excluded = TRUE, updated_at = NOW()`,
+      [userId]
+    )
+
+    const updated = await query(
+      `SELECT up.user_id, u.email, u.display_name, up.plan FROM user_plans up JOIN users u ON u.id = up.user_id WHERE up.user_id = $1`,
+      [userId]
+    )
+    res.json(updated.rows[0])
+  } catch (err) {
+    console.error('POST admin/revenue/exclude-user error:', err)
+    res.status(500).json({ error: 'Failed to exclude user' })
+  }
+})
+
+// DELETE /admin/revenue/exclude-user/:userId — include user back in MRR
+router.delete('/revenue/exclude-user/:userId', async (req, res) => {
+  try {
+    await query(
+      `UPDATE user_plans SET mrr_excluded = FALSE, updated_at = NOW() WHERE user_id = $1`,
+      [req.params.userId]
+    )
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('DELETE admin/revenue/exclude-user error:', err)
+    res.status(500).json({ error: 'Failed to include user' })
+  }
+})
+
+// POST /admin/revenue/zero — exclude all currently paid users from MRR (plan unchanged)
 router.post('/revenue/zero', async (req, res) => {
   try {
     const planPrices = { starter: 3, pro: 8 }
 
-    // Find all currently paid users
+    // Find all paid users not already excluded
     const paid = await query(
       `SELECT up.user_id, u.email, up.plan
        FROM user_plans up
        JOIN users u ON u.id = up.user_id
-       WHERE up.plan IN ('starter', 'pro')`
+       WHERE up.plan IN ('starter', 'pro') AND NOT COALESCE(up.mrr_excluded, FALSE)`
     )
 
     if (paid.rows.length === 0) {
       return res.status(400).json({ error: 'No paid users to zero' })
     }
 
-    const changes = paid.rows.map(r => ({
-      user_id: r.user_id,
-      email: r.email,
-      plan_before: r.plan,
-    }))
-
+    const changes = paid.rows.map(r => ({ user_id: r.user_id, email: r.email, plan: r.plan }))
     const mrrBefore = paid.rows.reduce((sum, r) => sum + (planPrices[r.plan] || 0), 0)
-    const userIds   = paid.rows.map(r => r.user_id)
+    const userIds = paid.rows.map(r => r.user_id)
 
-    // Set all paid users to free
+    // Mark them as excluded (plan is NOT changed)
     await query(
-      `UPDATE user_plans SET plan = 'free', updated_at = NOW()
+      `UPDATE user_plans SET mrr_excluded = TRUE, updated_at = NOW()
        WHERE user_id = ANY($1::uuid[])`,
       [userIds]
     )
 
-    // Save snapshot
     const snap = await query(
       `INSERT INTO mrr_snapshots (user_count, mrr_before, changes)
-       VALUES ($1, $2, $3)
-       RETURNING *`,
+       VALUES ($1, $2, $3) RETURNING *`,
       [paid.rows.length, mrrBefore.toFixed(2), JSON.stringify(changes)]
     )
 
@@ -450,34 +508,25 @@ router.post('/revenue/zero', async (req, res) => {
   }
 })
 
-// POST /admin/revenue/snapshots/:id/restore — restore only the users changed in this snapshot
+// POST /admin/revenue/snapshots/:id/restore — re-include only the users zeroed in this snapshot
 router.post('/revenue/snapshots/:id/restore', async (req, res) => {
   try {
-    const snap = await query(
-      `SELECT * FROM mrr_snapshots WHERE id = $1`,
-      [req.params.id]
-    )
+    const snap = await query(`SELECT * FROM mrr_snapshots WHERE id = $1`, [req.params.id])
     if (snap.rows.length === 0) return res.status(404).json({ error: 'Snapshot not found' })
 
     const { changes } = snap.rows[0]
     if (!changes || changes.length === 0) return res.status(400).json({ error: 'Nothing to restore' })
 
-    // Restore each user to their plan_before — upsert so it works even if row was deleted
-    for (const change of changes) {
-      await query(
-        `INSERT INTO user_plans (user_id, plan, updated_at)
-         VALUES ($1, $2, NOW())
-         ON CONFLICT (user_id) DO UPDATE SET plan = $2, updated_at = NOW()`,
-        [change.user_id, change.plan_before]
-      )
-    }
+    const userIds = changes.map(c => c.user_id)
 
-    // Mark snapshot as restored
+    // Remove exclusion flag for only these users
     await query(
-      `UPDATE mrr_snapshots SET restored_at = NOW() WHERE id = $1`,
-      [req.params.id]
+      `UPDATE user_plans SET mrr_excluded = FALSE, updated_at = NOW()
+       WHERE user_id = ANY($1::uuid[])`,
+      [userIds]
     )
 
+    await query(`UPDATE mrr_snapshots SET restored_at = NOW() WHERE id = $1`, [req.params.id])
     res.json({ restored: changes.length })
   } catch (err) {
     console.error('POST admin/revenue/snapshots restore error:', err)

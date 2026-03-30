@@ -245,6 +245,9 @@ export async function runMigrations() {
     // Backfill type column on tables created before it was added
     `ALTER TABLE waitlist ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'waitlist'`,
 
+    // Flag specific users as excluded from MRR/ARR display (plan unchanged)
+    `ALTER TABLE user_plans ADD COLUMN IF NOT EXISTS mrr_excluded BOOLEAN DEFAULT FALSE`,
+
     // MRR zero snapshots — each row is one "zero MRR" operation with undo history
     `CREATE TABLE IF NOT EXISTS mrr_snapshots (
       id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
