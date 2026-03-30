@@ -24,6 +24,7 @@ router.get('/stats', async (req, res) => {
         SELECT COALESCE(up.plan, 'free') as plan, COUNT(*) as count
         FROM users u
         LEFT JOIN user_plans up ON up.user_id = u.id
+        WHERE NOT (COALESCE(up.mrr_excluded, FALSE) AND (up.mrr_excluded_until IS NULL OR up.mrr_excluded_until > NOW()))
         GROUP BY COALESCE(up.plan, 'free')
         ORDER BY count DESC
       `),
