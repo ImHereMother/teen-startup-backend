@@ -28,6 +28,8 @@ app.use(cors({
 // Stripe webhook needs the raw body BEFORE the JSON parser touches it
 app.use('/stripe/webhook', express.raw({ type: 'application/json' }));
 
+// AI chat needs a higher limit to support base64 image uploads (up to ~7 MB)
+app.use('/ai/chat', express.json({ limit: '10mb' }));
 app.use(express.json({ limit: '50kb' }));
 
 app.use(rateLimit({
