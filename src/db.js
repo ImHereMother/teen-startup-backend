@@ -247,6 +247,7 @@ export async function runMigrations() {
 
     // Flag specific users as excluded from MRR/ARR display (plan unchanged)
     `ALTER TABLE user_plans ADD COLUMN IF NOT EXISTS mrr_excluded BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE user_plans ADD COLUMN IF NOT EXISTS mrr_excluded_until TIMESTAMPTZ`,
 
     // MRR zero snapshots — each row is one "zero MRR" operation with undo history
     `CREATE TABLE IF NOT EXISTS mrr_snapshots (

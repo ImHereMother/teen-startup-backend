@@ -361,15 +361,16 @@ router.get('/revenue', async (req, res) => {
   try {
     const planPrices = { free: 0, starter: 3, pro: 8 }
 
+    // A user is excluded if mrr_excluded=TRUE AND (no expiry OR expiry is in the future)
     const [result, excludedCount] = await Promise.all([
       query(
         `SELECT COALESCE(up.plan, 'free') as plan, COUNT(*) as users
          FROM users u
          LEFT JOIN user_plans up ON up.user_id = u.id
-         WHERE NOT COALESCE(up.mrr_excluded, FALSE)
+         WHERE NOT (COALESCE(up.mrr_excluded, FALSE) AND (up.mrr_excluded_until IS NULL OR up.mrr_excluded_until > NOW()))
          GROUP BY COALESCE(up.plan, 'free')`
       ),
-      query(`SELECT COUNT(*) as count FROM user_plans WHERE mrr_excluded = TRUE`),
+      query(`SELECT COUNT(*) as count FROM user_plans WHERE mrr_excluded = TRUE AND (mrr_excluded_until IS NULL OR mrr_excluded_until > NOW())`),
     ])
 
     const breakdown = result.rows.map(row => ({
@@ -407,14 +408,14 @@ router.get('/revenue/snapshots', async (req, res) => {
   }
 })
 
-// GET /admin/revenue/excluded — list all users currently excluded from MRR
+// GET /admin/revenue/excluded — list all users currently excluded from MRR (active exclusions only)
 router.get('/revenue/excluded', async (req, res) => {
   try {
     const result = await query(
-      `SELECT up.user_id, u.email, u.display_name, up.plan, up.updated_at
+      `SELECT up.user_id, u.email, u.display_name, up.plan, up.updated_at, up.mrr_excluded_until
        FROM user_plans up
        JOIN users u ON u.id = up.user_id
-       WHERE up.mrr_excluded = TRUE
+       WHERE up.mrr_excluded = TRUE AND (up.mrr_excluded_until IS NULL OR up.mrr_excluded_until > NOW())
        ORDER BY up.updated_at DESC`
     )
     res.json(result.rows)
@@ -424,10 +425,10 @@ router.get('/revenue/excluded', async (req, res) => {
   }
 })
 
-// POST /admin/revenue/exclude-user — exclude a specific user by email
+// POST /admin/revenue/exclude-user — exclude a specific user by email with optional duration
 router.post('/revenue/exclude-user', async (req, res) => {
   try {
-    const { email } = req.body
+    const { email, duration } = req.body
     if (!email) return res.status(400).json({ error: 'Email required' })
 
     const user = await query(`SELECT id FROM users WHERE email = $1`, [email.trim().toLowerCase()])
@@ -435,15 +436,29 @@ router.post('/revenue/exclude-user', async (req, res) => {
 
     const userId = user.rows[0].id
 
+    // Compute expiry based on duration
+    let excludedUntil = null
+    if (duration === 'month') {
+      // End of current calendar month
+      const now = new Date()
+      excludedUntil = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString()
+    } else if (duration === '30d') {
+      excludedUntil = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+    } else if (duration === '90d') {
+      excludedUntil = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString()
+    }
+    // 'permanent' or undefined → excludedUntil stays null
+
     await query(
-      `INSERT INTO user_plans (user_id, plan, mrr_excluded, updated_at)
-       VALUES ($1, 'free', TRUE, NOW())
-       ON CONFLICT (user_id) DO UPDATE SET mrr_excluded = TRUE, updated_at = NOW()`,
-      [userId]
+      `INSERT INTO user_plans (user_id, plan, mrr_excluded, mrr_excluded_until, updated_at)
+       VALUES ($1, 'free', TRUE, $2, NOW())
+       ON CONFLICT (user_id) DO UPDATE SET mrr_excluded = TRUE, mrr_excluded_until = $2, updated_at = NOW()`,
+      [userId, excludedUntil]
     )
 
     const updated = await query(
-      `SELECT up.user_id, u.email, u.display_name, up.plan FROM user_plans up JOIN users u ON u.id = up.user_id WHERE up.user_id = $1`,
+      `SELECT up.user_id, u.email, u.display_name, up.plan, up.mrr_excluded_until
+       FROM user_plans up JOIN users u ON u.id = up.user_id WHERE up.user_id = $1`,
       [userId]
     )
     res.json(updated.rows[0])
@@ -488,11 +503,15 @@ router.post('/revenue/zero', async (req, res) => {
     const mrrBefore = paid.rows.reduce((sum, r) => sum + (planPrices[r.plan] || 0), 0)
     const userIds = paid.rows.map(r => r.user_id)
 
-    // Mark them as excluded (plan is NOT changed)
+    // Default expiry: first day of next month (end of current calendar month)
+    const now = new Date()
+    const excludedUntil = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString()
+
+    // Mark them as excluded until end of month (plan is NOT changed)
     await query(
-      `UPDATE user_plans SET mrr_excluded = TRUE, updated_at = NOW()
+      `UPDATE user_plans SET mrr_excluded = TRUE, mrr_excluded_until = $2, updated_at = NOW()
        WHERE user_id = ANY($1::uuid[])`,
-      [userIds]
+      [userIds, excludedUntil]
     )
 
     const snap = await query(
