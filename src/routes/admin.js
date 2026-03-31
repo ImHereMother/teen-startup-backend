@@ -607,70 +607,80 @@ router.get('/ai-usage', async (req, res) => {
 
 // GET /admin/charts?metric=signups|active|events|ai&range=7d|30d|90d|6m|1y
 router.get('/charts', async (req, res) => {
-  // Whitelist of valid metric → SQL
-  const METRICS = {
-    signups: {
-      sql: (trunc, interval) =>
-        `SELECT DATE_TRUNC('${trunc}', created_at) as date, COUNT(*)::int as value
-         FROM users
-         WHERE created_at >= NOW() - INTERVAL '${interval}'
-         GROUP BY 1 ORDER BY 1`,
-    },
-    active: {
-      sql: (trunc, interval) =>
-        `SELECT DATE_TRUNC('${trunc}', occurred_at) as date, COUNT(DISTINCT user_id)::int as value
-         FROM user_events
-         WHERE occurred_at >= NOW() - INTERVAL '${interval}'
-         GROUP BY 1 ORDER BY 1`,
-    },
-    events: {
-      sql: (trunc, interval) =>
-        `SELECT DATE_TRUNC('${trunc}', occurred_at) as date, COUNT(*)::int as value
-         FROM user_events
-         WHERE occurred_at >= NOW() - INTERVAL '${interval}'
-         GROUP BY 1 ORDER BY 1`,
-    },
-    ai: {
-      sql: (trunc, interval) =>
-        `SELECT DATE_TRUNC('${trunc}', created_at) as date, COUNT(*)::int as value
-         FROM ai_messages
-         WHERE role = 'user' AND created_at >= NOW() - INTERVAL '${interval}'
-         GROUP BY 1 ORDER BY 1`,
-    },
-    revenue: {
-      // Revenue from new paid signups per period (starter=$3, pro=$8)
-      sql: (trunc, interval) =>
-        `SELECT DATE_TRUNC('${trunc}', u.created_at) as date,
-                SUM(CASE WHEN up.plan = 'starter' THEN 3
-                         WHEN up.plan = 'pro'     THEN 8
-                         ELSE 0 END)::int as value
-         FROM users u
-         INNER JOIN user_plans up ON up.user_id = u.id
-         WHERE u.created_at >= NOW() - INTERVAL '${interval}'
-           AND up.plan IN ('starter', 'pro')
-         GROUP BY 1 ORDER BY 1`,
-    },
-  }
-
-  // Whitelist of valid ranges → trunc unit + SQL interval
-  const RANGES = {
-    '7d':  { trunc: 'day',   interval: '7 days'   },
-    '30d': { trunc: 'day',   interval: '30 days'  },
-    '90d': { trunc: 'week',  interval: '90 days'  },
-    '6m':  { trunc: 'month', interval: '6 months' },
-    '1y':  { trunc: 'month', interval: '1 year'   },
-  }
-
   const metric = req.query.metric || 'signups'
   const range  = req.query.range  || '30d'
 
-  if (!METRICS[metric]) return res.status(400).json({ error: 'Unknown metric' })
-  if (!RANGES[range])   return res.status(400).json({ error: 'Unknown range' })
+  // Inner data query per metric — returns (date::date, value::int)
+  function innerSql(m, trunc, extraWhere = '') {
+    const w = extraWhere ? `AND ${extraWhere}` : ''
+    switch (m) {
+      case 'signups': return `
+        SELECT DATE_TRUNC('${trunc}', created_at)::date AS date, COUNT(*)::int AS value
+        FROM users WHERE TRUE ${w} GROUP BY 1`
+      case 'active': return `
+        SELECT DATE_TRUNC('${trunc}', occurred_at)::date AS date, COUNT(DISTINCT user_id)::int AS value
+        FROM user_events WHERE TRUE ${w} GROUP BY 1`
+      case 'events': return `
+        SELECT DATE_TRUNC('${trunc}', occurred_at)::date AS date, COUNT(*)::int AS value
+        FROM user_events WHERE TRUE ${w} GROUP BY 1`
+      case 'ai': return `
+        SELECT DATE_TRUNC('${trunc}', created_at)::date AS date, COUNT(*)::int AS value
+        FROM ai_messages WHERE role = 'user' ${w} GROUP BY 1`
+      case 'revenue': return `
+        SELECT DATE_TRUNC('${trunc}', u.created_at)::date AS date,
+               SUM(CASE WHEN up.plan='starter' THEN 3 WHEN up.plan='pro' THEN 8 ELSE 0 END)::int AS value
+        FROM users u
+        INNER JOIN user_plans up ON up.user_id = u.id
+        WHERE up.plan IN ('starter','pro') ${extraWhere ? `AND u.${extraWhere}` : ''} GROUP BY 1`
+      default: return null
+    }
+  }
 
-  const { trunc, interval } = RANGES[range]
+  // Build zero-filled query using generate_series
+  function zeroFillSql(innerQ, trunc, seriesStart, step) {
+    return `
+      WITH series AS (
+        SELECT generate_series(
+          DATE_TRUNC('${trunc}', ${seriesStart}::timestamptz),
+          DATE_TRUNC('${trunc}', NOW()),
+          INTERVAL '${step}'
+        )::date AS date
+      ),
+      raw AS (${innerQ})
+      SELECT s.date, COALESCE(r.value, 0) AS value
+      FROM series s LEFT JOIN raw r ON r.date = s.date
+      ORDER BY s.date`
+  }
+
+  const VALID_METRICS = ['signups','active','events','ai','revenue']
+  const VALID_RANGES  = ['7d','30d','90d','6m','1y','ytd','all']
+  if (!VALID_METRICS.includes(metric)) return res.status(400).json({ error: 'Unknown metric' })
+  if (!VALID_RANGES.includes(range))   return res.status(400).json({ error: 'Unknown range' })
+
+  const dateCol = (metric === 'active' || metric === 'events') ? 'occurred_at' : 'created_at'
 
   try {
-    const result = await query(METRICS[metric].sql(trunc, interval))
+    let sql
+    if (range === 'all') {
+      // All-time: raw data only, appropriate trunc, no zero fill
+      sql = `${innerSql(metric, 'week')} ORDER BY date`
+    } else if (range === 'ytd') {
+      const where = `${dateCol} >= DATE_TRUNC('year', NOW())`
+      sql = zeroFillSql(innerSql(metric, 'day', where), 'day', 'DATE_TRUNC(\'year\', NOW())', '1 day')
+    } else {
+      const RANGES = {
+        '7d':  { trunc: 'day',   interval: '7 days',   step: '1 day'   },
+        '30d': { trunc: 'day',   interval: '30 days',  step: '1 day'   },
+        '90d': { trunc: 'week',  interval: '90 days',  step: '1 week'  },
+        '6m':  { trunc: 'month', interval: '6 months', step: '1 month' },
+        '1y':  { trunc: 'month', interval: '1 year',   step: '1 month' },
+      }
+      const { trunc, interval, step } = RANGES[range]
+      const where = `${dateCol} >= NOW() - INTERVAL '${interval}'`
+      sql = zeroFillSql(innerSql(metric, trunc, where), trunc, `NOW() - INTERVAL '${interval}'`, step)
+    }
+
+    const result = await query(sql)
     res.json(result.rows)
   } catch (err) {
     console.error('GET admin/charts error:', err)
