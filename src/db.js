@@ -278,6 +278,16 @@ export async function runMigrations() {
       mrr_before  NUMERIC(10,2) NOT NULL DEFAULT 0,
       changes     JSONB NOT NULL DEFAULT '[]'
     )`,
+
+    // In-app broadcast messages — admin sends, users see as popup
+    `CREATE TABLE IF NOT EXISTS broadcasts (
+      id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      title        TEXT NOT NULL,
+      message      TEXT NOT NULL,
+      target_plan  TEXT,
+      active       BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at   TIMESTAMPTZ DEFAULT NOW()
+    )`,
   ]
 
   for (const sql of migrations) {

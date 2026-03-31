@@ -845,4 +845,25 @@ router.delete('/2fa', async (req, res) => {
   }
 })
 
+// GET /user/broadcasts — active broadcasts for this user's plan
+router.get('/broadcasts', async (req, res) => {
+  try {
+    const planResult = await query(
+      `SELECT COALESCE(up.plan, 'free') AS plan FROM users u LEFT JOIN user_plans up ON up.user_id = u.id WHERE u.id = $1`,
+      [req.userId]
+    )
+    const userPlan = planResult.rows[0]?.plan || 'free'
+    const result = await query(
+      `SELECT id, title, message, created_at FROM broadcasts
+       WHERE active = TRUE AND (target_plan IS NULL OR target_plan = $1)
+       ORDER BY created_at DESC`,
+      [userPlan]
+    )
+    res.json(result.rows)
+  } catch (err) {
+    console.error('GET user/broadcasts error:', err)
+    res.status(500).json({ error: 'Failed to fetch broadcasts' })
+  }
+})
+
 export default router

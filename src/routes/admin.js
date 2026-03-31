@@ -879,4 +879,47 @@ router.get('/waitlist', async (req, res) => {
   }
 })
 
+// ── Broadcasts ────────────────────────────────────────────
+
+// GET /admin/broadcasts
+router.get('/broadcasts', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT id, title, message, target_plan, active, created_at
+       FROM broadcasts ORDER BY created_at DESC LIMIT 100`
+    )
+    res.json(result.rows)
+  } catch (err) {
+    console.error('GET admin/broadcasts error:', err)
+    res.status(500).json({ error: 'Failed to fetch broadcasts' })
+  }
+})
+
+// POST /admin/broadcasts
+router.post('/broadcasts', async (req, res) => {
+  try {
+    const { title, message, target_plan } = req.body
+    if (!title?.trim() || !message?.trim()) return res.status(400).json({ error: 'Title and message required' })
+    const result = await query(
+      `INSERT INTO broadcasts (title, message, target_plan) VALUES ($1, $2, $3) RETURNING *`,
+      [title.trim(), message.trim(), target_plan || null]
+    )
+    res.json(result.rows[0])
+  } catch (err) {
+    console.error('POST admin/broadcasts error:', err)
+    res.status(500).json({ error: 'Failed to create broadcast' })
+  }
+})
+
+// DELETE /admin/broadcasts/:id
+router.delete('/broadcasts/:id', async (req, res) => {
+  try {
+    await query('DELETE FROM broadcasts WHERE id = $1', [req.params.id])
+    res.json({ success: true })
+  } catch (err) {
+    console.error('DELETE admin/broadcasts error:', err)
+    res.status(500).json({ error: 'Failed to delete broadcast' })
+  }
+})
+
 export default router
