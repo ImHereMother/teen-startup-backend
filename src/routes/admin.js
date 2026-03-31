@@ -641,7 +641,7 @@ router.get('/charts', async (req, res) => {
     return `
       WITH series AS (
         SELECT generate_series(
-          DATE_TRUNC('${trunc}', ${seriesStart}::timestamptz),
+          DATE_TRUNC('${trunc}', (${seriesStart})),
           DATE_TRUNC('${trunc}', NOW()),
           INTERVAL '${step}'
         )::date AS date
