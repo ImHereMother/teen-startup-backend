@@ -83,10 +83,26 @@ router.patch('/password', async (req, res) => {
 router.get('/plan', async (req, res) => {
   try {
     const result = await query(
-      `SELECT COALESCE(plan, 'free') AS plan FROM user_plans WHERE user_id = $1`,
+      `SELECT plan, plan_expires_at FROM user_plans WHERE user_id = $1`,
       [req.userId]
     )
-    res.json({ plan: result.rows[0]?.plan || 'free' })
+    let plan = result.rows[0]?.plan || 'free'
+    const expiresAt = result.rows[0]?.plan_expires_at
+
+    // Auto-revert expired temporary plans back to free
+    if (expiresAt && new Date(expiresAt) < new Date()) {
+      await query(
+        `UPDATE user_plans SET plan = 'free', plan_expires_at = NULL, updated_at = NOW()
+         WHERE user_id = $1`,
+        [req.userId]
+      )
+      plan = 'free'
+    }
+
+    res.json({
+      plan,
+      planExpiresAt: expiresAt && new Date(expiresAt) > new Date() ? expiresAt : null,
+    })
   } catch (err) {
     console.error('GET plan error:', err)
     res.status(500).json({ error: 'Failed to fetch plan' })
@@ -101,9 +117,12 @@ router.put('/plan', async (req, res) => {
     if (!valid.includes(plan)) {
       return res.status(400).json({ error: 'Invalid plan. Must be free, starter, or pro' })
     }
+    // Clear plan_expires_at — this is a permanent plan change (Stripe upgrade/downgrade)
     const result = await query(
-      `INSERT INTO user_plans (user_id, plan) VALUES ($1, $2)
-       ON CONFLICT (user_id) DO UPDATE SET plan = EXCLUDED.plan
+      `INSERT INTO user_plans (user_id, plan, plan_expires_at, updated_at)
+       VALUES ($1, $2, NULL, NOW())
+       ON CONFLICT (user_id) DO UPDATE
+         SET plan = EXCLUDED.plan, plan_expires_at = NULL, updated_at = NOW()
        RETURNING plan`,
       [req.userId, plan]
     )
@@ -128,12 +147,13 @@ router.post('/plan/cancel', async (req, res) => {
     // Cancel in Stripe (non-blocking — we always update DB regardless)
     const cancelled = await cancelSubscription(subscriptionId)
 
-    // Set plan to free and clear Stripe IDs in DB
+    // Set plan to free and clear Stripe IDs + expiry in DB
     await query(
-      `INSERT INTO user_plans (user_id, plan, stripe_subscription_id, stripe_price_id, updated_at)
-       VALUES ($1, 'free', NULL, NULL, NOW())
+      `INSERT INTO user_plans (user_id, plan, plan_expires_at, stripe_subscription_id, stripe_price_id, updated_at)
+       VALUES ($1, 'free', NULL, NULL, NULL, NOW())
        ON CONFLICT (user_id) DO UPDATE
          SET plan = 'free',
+             plan_expires_at = NULL,
              stripe_subscription_id = NULL,
              stripe_price_id = NULL,
              updated_at = NOW()`,
@@ -556,14 +576,20 @@ router.put('/goals', async (req, res) => {
     await query('DELETE FROM user_goals WHERE user_id = $1', [req.userId])
 
     if (goals.length > 0) {
-      const values = goals.map((g, i) => {
-        const id = uuidv4()
-        return `('${id}', $1, '${(g.title || '').replace(/'/g, "''")}', '${(g.description || '').replace(/'/g, "''")}', '${g.target_date || ''}', NOW())`
-      })
-      await query(
-        `INSERT INTO user_goals (id, user_id, title, description, target_date, created_at) VALUES ${values.join(',')}`,
-        [req.userId]
-      )
+      // Fully parameterized — no string interpolation of user data
+      for (const g of goals.slice(0, 20)) {
+        await query(
+          `INSERT INTO user_goals (id, user_id, title, description, target_date, created_at)
+           VALUES ($1, $2, $3, $4, $5, NOW())`,
+          [
+            uuidv4(),
+            req.userId,
+            (g.title || '').slice(0, 200),
+            (g.description || '').slice(0, 500),
+            g.target_date || null,
+          ]
+        )
+      }
     }
 
     const result = await query('SELECT * FROM user_goals WHERE user_id = $1 ORDER BY created_at DESC', [req.userId])

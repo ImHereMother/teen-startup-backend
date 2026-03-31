@@ -253,6 +253,9 @@ export async function runMigrations() {
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT UNIQUE`,
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by UUID REFERENCES users(id) ON DELETE SET NULL`,
 
+    // Temporary plan expiry — used for referral rewards (auto-reverts to free)
+    `ALTER TABLE user_plans ADD COLUMN IF NOT EXISTS plan_expires_at TIMESTAMPTZ`,
+
     // Referral rewards — track pending/applied free-month rewards
     `CREATE TABLE IF NOT EXISTS referral_rewards (\n      id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n      user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n      referred_id  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n      status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'applied')),\n      created_at   TIMESTAMPTZ DEFAULT NOW(),\n      UNIQUE (referred_id)\n    )`,
 

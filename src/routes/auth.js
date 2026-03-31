@@ -79,25 +79,70 @@ router.post('/register', async (req, res) => {
       [userId, email.toLowerCase(), passwordHash, display_name || null, referralCode]
     )
 
-    // Track referral if a ref code was provided
+    // Track referral and apply rewards if a ref code was provided
     const { ref } = req.body
+    let startingPlan = 'free'
+
     if (ref) {
-      const refUser = await query('SELECT id FROM users WHERE referral_code = $1', [ref.toUpperCase()])
-      if (refUser.rows[0]) {
-        const referrerId = refUser.rows[0].id
-        await query('UPDATE users SET referred_by = $1 WHERE id = $2', [referrerId, userId])
-        // Create pending reward for the referrer
-        await query(
-          `INSERT INTO referral_rewards (user_id, referred_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-          [referrerId, userId]
-        ).catch(() => {})
+      try {
+        const refUser = await query('SELECT id FROM users WHERE referral_code = $1', [ref.toUpperCase()])
+        if (refUser.rows[0] && refUser.rows[0].id !== userId) {
+          const referrerId = refUser.rows[0].id
+          await query('UPDATE users SET referred_by = $1 WHERE id = $2', [referrerId, userId])
+
+          const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+
+          // Give referred user Starter for 1 week
+          await query(
+            `INSERT INTO user_plans (user_id, plan, plan_expires_at, updated_at)
+             VALUES ($1, 'starter', $2, NOW())
+             ON CONFLICT (user_id) DO UPDATE
+               SET plan = 'starter', plan_expires_at = EXCLUDED.plan_expires_at, updated_at = NOW()`,
+            [userId, expiresAt]
+          )
+          startingPlan = 'starter'
+
+          // Check reward cap (max 5 applied rewards per referrer)
+          const rewardCount = await query(
+            `SELECT COUNT(*) AS count FROM referral_rewards WHERE user_id = $1 AND status = 'applied'`,
+            [referrerId]
+          )
+          const atCap = parseInt(rewardCount.rows[0].count, 10) >= 5
+
+          if (!atCap) {
+            // Give referrer Pro for 1 week — only if they don't already have a permanent paid plan
+            await query(
+              `INSERT INTO user_plans (user_id, plan, plan_expires_at, updated_at)
+               VALUES ($1, 'pro', $2, NOW())
+               ON CONFLICT (user_id) DO UPDATE
+                 SET plan = 'pro', plan_expires_at = EXCLUDED.plan_expires_at, updated_at = NOW()
+               WHERE user_plans.plan = 'free' OR user_plans.plan_expires_at IS NOT NULL`,
+              [referrerId, expiresAt]
+            )
+            await query(
+              `INSERT INTO referral_rewards (user_id, referred_id, status)
+               VALUES ($1, $2, 'applied') ON CONFLICT (referred_id) DO NOTHING`,
+              [referrerId, userId]
+            )
+          } else {
+            // Cap reached — log it but don't apply reward
+            await query(
+              `INSERT INTO referral_rewards (user_id, referred_id, status)
+               VALUES ($1, $2, 'pending') ON CONFLICT (referred_id) DO NOTHING`,
+              [referrerId, userId]
+            )
+          }
+        }
+      } catch (refErr) {
+        console.error('Referral processing error:', refErr)
+        // Non-fatal — proceed with registration
       }
     }
 
-    const accessToken = generateAccessToken(userId, 'free')
+    const accessToken = generateAccessToken(userId, startingPlan)
     const refreshToken = await generateRefreshToken(userId)
 
-    res.status(201).json({ accessToken, refreshToken, userId, plan: 'free', referralCode })
+    res.status(201).json({ accessToken, refreshToken, userId, plan: startingPlan, referralCode })
   } catch (err) {
     console.error('Register error:', err)
     res.status(500).json({ error: 'Registration failed' })

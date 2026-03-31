@@ -25,6 +25,7 @@ router.get('/stats', async (req, res) => {
         FROM users u
         LEFT JOIN user_plans up ON up.user_id = u.id
         WHERE NOT (COALESCE(up.mrr_excluded, FALSE) AND (up.mrr_excluded_until IS NULL OR up.mrr_excluded_until > NOW()))
+          AND (up.plan_expires_at IS NULL OR up.plan_expires_at <= NOW())
         GROUP BY COALESCE(up.plan, 'free')
         ORDER BY count DESC
       `),
@@ -79,15 +80,24 @@ router.get('/users', async (req, res) => {
     const sortBy  = SORT_COLS[req.query.sortBy]  || 'u.created_at'
     const sortDir = req.query.sortDir === 'asc'  ? 'ASC' : 'DESC'
 
-    let whereClause = ''
-    const listParams = [limit, offset]
+    const conditions = []
+    const listParams  = [limit, offset]
     const countParams = []
 
     if (search) {
       listParams.push(`%${search}%`)
       countParams.push(`%${search}%`)
-      whereClause = `WHERE (u.email ILIKE $${listParams.length} OR u.display_name ILIKE $${listParams.length})`
+      conditions.push(`(u.email ILIKE $${listParams.length} OR u.display_name ILIKE $${listParams.length})`)
     }
+
+    const VALID_PLANS = ['free', 'starter', 'pro']
+    if (req.query.plan && VALID_PLANS.includes(req.query.plan)) {
+      listParams.push(req.query.plan)
+      countParams.push(req.query.plan)
+      conditions.push(`COALESCE(up.plan, 'free') = $${listParams.length}`)
+    }
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
 
     const [users, total] = await Promise.all([
       query(
@@ -180,23 +190,24 @@ router.patch('/users/:id/plan', async (req, res) => {
       const subscriptionId = subResult.rows[0]?.stripe_subscription_id
       subscriptionCancelled = await cancelSubscription(subscriptionId)
 
-      // Clear Stripe fields when going to free
+      // Clear Stripe fields + expiry when going to free
       await query(
-        `INSERT INTO user_plans (user_id, plan, stripe_subscription_id, stripe_price_id, updated_at)
-         VALUES ($1, 'free', NULL, NULL, NOW())
+        `INSERT INTO user_plans (user_id, plan, plan_expires_at, stripe_subscription_id, stripe_price_id, updated_at)
+         VALUES ($1, 'free', NULL, NULL, NULL, NOW())
          ON CONFLICT (user_id) DO UPDATE
            SET plan = 'free',
+               plan_expires_at = NULL,
                stripe_subscription_id = NULL,
                stripe_price_id = NULL,
                updated_at = NOW()`,
         [req.params.id]
       )
     } else {
-      // Paid plan override (admin granting access) — don't touch Stripe fields
+      // Paid plan override (admin granting access) — clear expiry, don't touch Stripe fields
       await query(
-        `INSERT INTO user_plans (user_id, plan, updated_at)
-         VALUES ($1, $2, NOW())
-         ON CONFLICT (user_id) DO UPDATE SET plan = $2, updated_at = NOW()`,
+        `INSERT INTO user_plans (user_id, plan, plan_expires_at, updated_at)
+         VALUES ($1, $2, NULL, NOW())
+         ON CONFLICT (user_id) DO UPDATE SET plan = $2, plan_expires_at = NULL, updated_at = NOW()`,
         [req.params.id, plan]
       )
     }
@@ -362,13 +373,14 @@ router.get('/revenue', async (req, res) => {
   try {
     const planPrices = { free: 0, starter: 3, pro: 8 }
 
-    // A user is excluded if mrr_excluded=TRUE AND (no expiry OR expiry is in the future)
+    // Exclude: mrr_excluded users AND users on temporary referral plans (plan_expires_at set)
     const [result, excludedCount] = await Promise.all([
       query(
         `SELECT COALESCE(up.plan, 'free') as plan, COUNT(*) as users
          FROM users u
          LEFT JOIN user_plans up ON up.user_id = u.id
          WHERE NOT (COALESCE(up.mrr_excluded, FALSE) AND (up.mrr_excluded_until IS NULL OR up.mrr_excluded_until > NOW()))
+           AND (up.plan_expires_at IS NULL OR up.plan_expires_at <= NOW())
          GROUP BY COALESCE(up.plan, 'free')`
       ),
       query(`SELECT COUNT(*) as count FROM user_plans WHERE mrr_excluded = TRUE AND (mrr_excluded_until IS NULL OR mrr_excluded_until > NOW())`),
@@ -400,7 +412,7 @@ router.get('/revenue/snapshots', async (req, res) => {
   try {
     const result = await query(
       `SELECT id, created_at, restored_at, user_count, mrr_before, changes
-       FROM mrr_snapshots ORDER BY created_at DESC`
+       FROM mrr_snapshots ORDER BY created_at DESC LIMIT 365`
     )
     res.json(result.rows)
   } catch (err) {
@@ -736,7 +748,10 @@ router.get('/featured', async (req, res) => {
     const vals       = []
 
     if (req.query.status)    { vals.push(req.query.status); conditions.push(`fs.status = $${vals.length}`) }
-    if (req.query.idea_id)   { vals.push(parseInt(req.query.idea_id, 10)); conditions.push(`fs.idea_id = $${vals.length}`) }
+    if (req.query.idea_id) {
+      const ideaId = parseInt(req.query.idea_id, 10)
+      if (!isNaN(ideaId)) { vals.push(ideaId); conditions.push(`fs.idea_id = $${vals.length}`) }
+    }
     if (req.query.live_only) { conditions.push(`fs.created_at >= NOW() - INTERVAL '30 days'`) }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
