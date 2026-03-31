@@ -661,23 +661,24 @@ router.get('/charts', async (req, res) => {
 
   try {
     let sql
+    // All ranges use daily granularity — one data point per day, zero-filled
     if (range === 'all') {
-      // All-time: raw data only, appropriate trunc, no zero fill
-      sql = `${innerSql(metric, 'week')} ORDER BY date`
+      // All-time: every day that exists in DB, no zero fill (only days with actual data)
+      sql = `${innerSql(metric, 'day')} ORDER BY date`
     } else if (range === 'ytd') {
       const where = `${dateCol} >= DATE_TRUNC('year', NOW())`
-      sql = zeroFillSql(innerSql(metric, 'day', where), 'day', 'DATE_TRUNC(\'year\', NOW())', '1 day')
+      sql = zeroFillSql(innerSql(metric, 'day', where), 'day', `DATE_TRUNC('year', NOW())`, '1 day')
     } else {
-      const RANGES = {
-        '7d':  { trunc: 'day',   interval: '7 days',   step: '1 day'   },
-        '30d': { trunc: 'day',   interval: '30 days',  step: '1 day'   },
-        '90d': { trunc: 'week',  interval: '90 days',  step: '1 week'  },
-        '6m':  { trunc: 'month', interval: '6 months', step: '1 month' },
-        '1y':  { trunc: 'month', interval: '1 year',   step: '1 month' },
+      const INTERVALS = {
+        '7d':  '7 days',
+        '30d': '30 days',
+        '90d': '90 days',
+        '6m':  '6 months',
+        '1y':  '1 year',
       }
-      const { trunc, interval, step } = RANGES[range]
+      const interval = INTERVALS[range]
       const where = `${dateCol} >= NOW() - INTERVAL '${interval}'`
-      sql = zeroFillSql(innerSql(metric, trunc, where), trunc, `NOW() - INTERVAL '${interval}'`, step)
+      sql = zeroFillSql(innerSql(metric, 'day', where), 'day', `NOW() - INTERVAL '${interval}'`, '1 day')
     }
 
     const result = await query(sql)
