@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import { v4 as uuidv4 } from 'uuid'
 import { query } from '../db.js'
+import { sendTwoFaCode } from '../email.js'
 
 const router = Router()
 const JWT_SECRET = process.env.JWT_SECRET
@@ -159,7 +160,7 @@ router.post('/login', async (req, res) => {
 
     const result = await query(
       `SELECT u.id, u.email, u.display_name, u.avatar_url, u.member_since, u.password_hash,
-              COALESCE(up.plan, 'free') AS plan
+              u.two_fa_enabled, COALESCE(up.plan, 'free') AS plan
        FROM users u LEFT JOIN user_plans up ON up.user_id = u.id
        WHERE u.email = $1`,
       [email.toLowerCase()]
@@ -177,6 +178,20 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' })
     }
 
+    // If 2FA is enabled, send a code and return a short-lived token instead of full access
+    if (user.two_fa_enabled) {
+      const code = String(Math.floor(100000 + Math.random() * 900000))
+      const expires = new Date(Date.now() + 10 * 60 * 1000) // 10 minutes
+      await query(
+        `UPDATE users SET two_fa_code = $1, two_fa_code_expires_at = $2 WHERE id = $3`,
+        [code, expires, user.id]
+      )
+      await sendTwoFaCode(user.email, code)
+      // Issue a short-lived token that can ONLY be used to verify the 2FA code
+      const twoFaToken = jwt.sign({ sub: user.id, twoFa: true }, JWT_SECRET, { expiresIn: '10m' })
+      return res.json({ twoFaRequired: true, twoFaToken, email: user.email })
+    }
+
     await query('UPDATE users SET last_seen_at = NOW() WHERE id = $1', [user.id])
 
     const accessToken = generateAccessToken(user.id, user.plan, false, {
@@ -190,6 +205,90 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     console.error('Login error:', err)
     res.status(500).json({ error: 'Login failed' })
+  }
+})
+
+// POST /auth/2fa/verify — exchange twoFaToken + code for real tokens
+router.post('/2fa/verify', async (req, res) => {
+  try {
+    const { twoFaToken, code } = req.body
+    if (!twoFaToken || !code) return res.status(400).json({ error: 'twoFaToken and code are required' })
+
+    let payload
+    try {
+      payload = jwt.verify(twoFaToken, JWT_SECRET)
+    } catch {
+      return res.status(401).json({ error: 'Invalid or expired session — please log in again' })
+    }
+    if (!payload.twoFa) return res.status(401).json({ error: 'Invalid token type' })
+
+    const result = await query(
+      `SELECT u.id, u.email, u.display_name, u.avatar_url, u.member_since,
+              u.two_fa_code, u.two_fa_code_expires_at, COALESCE(up.plan, 'free') AS plan
+       FROM users u LEFT JOIN user_plans up ON up.user_id = u.id
+       WHERE u.id = $1`,
+      [payload.sub]
+    )
+    const user = result.rows[0]
+    if (!user) return res.status(401).json({ error: 'User not found' })
+
+    if (!user.two_fa_code || user.two_fa_code !== code.trim()) {
+      return res.status(401).json({ error: 'Incorrect code' })
+    }
+    if (!user.two_fa_code_expires_at || new Date(user.two_fa_code_expires_at) < new Date()) {
+      return res.status(401).json({ error: 'Code expired — please log in again' })
+    }
+
+    // Clear the code so it can't be reused
+    await query(
+      `UPDATE users SET two_fa_code = NULL, two_fa_code_expires_at = NULL, last_seen_at = NOW() WHERE id = $1`,
+      [user.id]
+    )
+
+    const accessToken = generateAccessToken(user.id, user.plan, false, {
+      email: user.email,
+      display_name: user.display_name,
+      avatar_url: user.avatar_url,
+    })
+    const refreshToken = await generateRefreshToken(user.id)
+
+    res.json({ accessToken, refreshToken, userId: user.id, email: user.email, plan: user.plan, displayName: user.display_name, avatarUrl: user.avatar_url, memberSince: user.member_since })
+  } catch (err) {
+    console.error('2FA verify error:', err)
+    res.status(500).json({ error: '2FA verification failed' })
+  }
+})
+
+// POST /auth/2fa/resend — resend code using existing twoFaToken
+router.post('/2fa/resend', async (req, res) => {
+  try {
+    const { twoFaToken } = req.body
+    if (!twoFaToken) return res.status(400).json({ error: 'twoFaToken is required' })
+
+    let payload
+    try {
+      payload = jwt.verify(twoFaToken, JWT_SECRET)
+    } catch {
+      return res.status(401).json({ error: 'Session expired — please log in again' })
+    }
+    if (!payload.twoFa) return res.status(401).json({ error: 'Invalid token type' })
+
+    const result = await query('SELECT id, email FROM users WHERE id = $1', [payload.sub])
+    const user = result.rows[0]
+    if (!user) return res.status(404).json({ error: 'User not found' })
+
+    const code = String(Math.floor(100000 + Math.random() * 900000))
+    const expires = new Date(Date.now() + 10 * 60 * 1000)
+    await query(
+      `UPDATE users SET two_fa_code = $1, two_fa_code_expires_at = $2 WHERE id = $3`,
+      [code, expires, user.id]
+    )
+    await sendTwoFaCode(user.email, code)
+
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('2FA resend error:', err)
+    res.status(500).json({ error: 'Failed to resend code' })
   }
 })
 

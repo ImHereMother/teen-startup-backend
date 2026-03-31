@@ -19,6 +19,7 @@
     "googleapis": "^148.0.0",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
+    "nodemailer": "^8.0.4",
     "pg": "^8.20.0",
     "stripe": "^21.0.1",
     "uuid": "^13.0.0"

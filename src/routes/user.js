@@ -845,7 +845,7 @@ router.delete('/2fa', async (req, res) => {
   }
 })
 
-// GET /user/broadcasts — active broadcasts for this user's plan
+// GET /user/broadcasts — active broadcasts for this user's plan or targeted directly
 router.get('/broadcasts', async (req, res) => {
   try {
     const planResult = await query(
@@ -855,9 +855,13 @@ router.get('/broadcasts', async (req, res) => {
     const userPlan = planResult.rows[0]?.plan || 'free'
     const result = await query(
       `SELECT id, title, message, created_at FROM broadcasts
-       WHERE active = TRUE AND (target_plan IS NULL OR target_plan = $1)
+       WHERE active = TRUE AND (
+         (target_plan IS NULL AND target_user_id IS NULL)
+         OR target_plan = $1
+         OR target_user_id = $2
+       )
        ORDER BY created_at DESC`,
-      [userPlan]
+      [userPlan, req.userId]
     )
     res.json(result.rows)
   } catch (err) {

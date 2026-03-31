@@ -102,7 +102,8 @@ router.get('/users', async (req, res) => {
     const [users, total] = await Promise.all([
       query(
         `SELECT u.id, u.email, u.display_name, COALESCE(up.plan, 'free') as plan,
-                u.created_at, u.last_seen_at
+                u.created_at, u.last_seen_at,
+                EXISTS(SELECT 1 FROM user_progress_backups pb WHERE pb.user_id = u.id) AS has_backup
          FROM users u
          LEFT JOIN user_plans up ON up.user_id = u.id
          ${whereClause}
@@ -243,33 +244,147 @@ router.delete('/users/:id', async (req, res) => {
   }
 })
 
-// POST /admin/users/:id/reset-progress
+// POST /admin/users/:id/reset-progress — backup then wipe all progress + AI history
 router.post('/users/:id/reset-progress', async (req, res) => {
   try {
     const userId = req.params.id
     const userCheck = await query('SELECT id FROM users WHERE id = $1', [userId])
     if (!userCheck.rows[0]) return res.status(404).json({ error: 'User not found' })
 
+    // 1. Snapshot current progress into backup table
+    const [streakRow, badgeRows, quizRows, roadmapRows, convRows] = await Promise.all([
+      query(`SELECT current_streak, longest_streak, last_active FROM user_streaks WHERE user_id = $1`, [userId]),
+      query(`SELECT badge_id, earned_at FROM user_badges WHERE user_id = $1`, [userId]),
+      query(`SELECT question_key, answer FROM quiz_answers WHERE user_id = $1`, [userId]),
+      query(`SELECT idea_id, roadmap_data FROM user_tracked_ideas WHERE user_id = $1`, [userId]),
+      query(
+        `SELECT c.id, c.title, c.created_at,
+                json_agg(m ORDER BY m.created_at) FILTER (WHERE m.id IS NOT NULL) AS messages
+         FROM conversations c
+         LEFT JOIN ai_messages m ON m.conversation_id = c.id
+         WHERE c.user_id = $1
+         GROUP BY c.id`,
+        [userId]
+      ),
+    ])
+
+    await query(
+      `INSERT INTO user_progress_backups (user_id, streak_data, badges, quiz_answers, roadmap_data, conversations)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        userId,
+        JSON.stringify(streakRow.rows[0] || {}),
+        JSON.stringify(badgeRows.rows),
+        JSON.stringify(quizRows.rows),
+        JSON.stringify(roadmapRows.rows),
+        JSON.stringify(convRows.rows),
+      ]
+    )
+
+    // 2. Wipe all progress and AI history
     await Promise.all([
-      // Reset streak to zero
       query(
         `INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_active)
          VALUES ($1, 0, 0, NOW())
          ON CONFLICT (user_id) DO UPDATE SET current_streak = 0, longest_streak = 0, last_active = NOW()`,
         [userId]
       ),
-      // Clear all badges
       query('DELETE FROM user_badges WHERE user_id = $1', [userId]),
-      // Clear quiz answers so onboarding re-triggers
       query('DELETE FROM quiz_answers WHERE user_id = $1', [userId]),
-      // Reset all roadmap progress
       query(`UPDATE user_tracked_ideas SET roadmap_data = '{}' WHERE user_id = $1`, [userId]),
+      query('DELETE FROM ai_messages WHERE user_id = $1', [userId]),
+      query('DELETE FROM conversations WHERE user_id = $1', [userId]),
     ])
 
     res.json({ success: true })
   } catch (err) {
     console.error('POST admin/users/:id/reset-progress error:', err)
     res.status(500).json({ error: 'Failed to reset progress' })
+  }
+})
+
+// POST /admin/users/:id/restore-progress — restore from latest backup
+router.post('/users/:id/restore-progress', async (req, res) => {
+  try {
+    const userId = req.params.id
+
+    const backupRow = await query(
+      `SELECT * FROM user_progress_backups WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    )
+    if (!backupRow.rows[0]) return res.status(404).json({ error: 'No backup found for this user' })
+    const b = backupRow.rows[0]
+
+    // Restore streak
+    if (b.streak_data && b.streak_data.current_streak != null) {
+      await query(
+        `INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_active)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_id) DO UPDATE
+           SET current_streak = $2, longest_streak = $3, last_active = $4`,
+        [userId, b.streak_data.current_streak, b.streak_data.longest_streak, b.streak_data.last_active]
+      )
+    }
+
+    // Restore badges
+    if (b.badges?.length) {
+      await Promise.all(b.badges.map(badge =>
+        query(
+          `INSERT INTO user_badges (user_id, badge_id, earned_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+          [userId, badge.badge_id, badge.earned_at]
+        )
+      ))
+    }
+
+    // Restore quiz answers
+    if (b.quiz_answers?.length) {
+      await Promise.all(b.quiz_answers.map(qa =>
+        query(
+          `INSERT INTO quiz_answers (user_id, question_key, answer) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+          [userId, qa.question_key, qa.answer]
+        )
+      ))
+    }
+
+    // Restore roadmap data
+    if (b.roadmap_data?.length) {
+      await Promise.all(b.roadmap_data.map(rd =>
+        query(
+          `INSERT INTO user_tracked_ideas (user_id, idea_id, roadmap_data)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (user_id, idea_id) DO UPDATE SET roadmap_data = $3`,
+          [userId, rd.idea_id, JSON.stringify(rd.roadmap_data)]
+        )
+      ))
+    }
+
+    // Restore conversations + AI messages
+    if (b.conversations?.length) {
+      for (const conv of b.conversations) {
+        await query(
+          `INSERT INTO conversations (id, user_id, title, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $4) ON CONFLICT DO NOTHING`,
+          [conv.id, userId, conv.title, conv.created_at]
+        )
+        if (conv.messages?.length) {
+          await Promise.all(conv.messages.map(m =>
+            query(
+              `INSERT INTO ai_messages (id, user_id, conversation_id, role, content, model, input_tokens, output_tokens, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING`,
+              [m.id, userId, conv.id, m.role, m.content, m.model, m.input_tokens, m.output_tokens, m.created_at]
+            )
+          ))
+        }
+      }
+    }
+
+    // Delete the backup after restoring
+    await query(`DELETE FROM user_progress_backups WHERE id = $1`, [b.id])
+
+    res.json({ success: true })
+  } catch (err) {
+    console.error('POST admin/users/:id/restore-progress error:', err)
+    res.status(500).json({ error: 'Failed to restore progress' })
   }
 })
 
@@ -885,8 +1000,12 @@ router.get('/waitlist', async (req, res) => {
 router.get('/broadcasts', async (req, res) => {
   try {
     const result = await query(
-      `SELECT id, title, message, target_plan, active, created_at
-       FROM broadcasts ORDER BY created_at DESC LIMIT 100`
+      `SELECT b.id, b.title, b.message, b.target_plan, b.target_user_id,
+              u.email AS target_user_email, u.display_name AS target_user_name,
+              b.active, b.created_at
+       FROM broadcasts b
+       LEFT JOIN users u ON u.id = b.target_user_id
+       ORDER BY b.created_at DESC LIMIT 100`
     )
     res.json(result.rows)
   } catch (err) {
@@ -898,11 +1017,11 @@ router.get('/broadcasts', async (req, res) => {
 // POST /admin/broadcasts
 router.post('/broadcasts', async (req, res) => {
   try {
-    const { title, message, target_plan } = req.body
+    const { title, message, target_plan, target_user_id } = req.body
     if (!title?.trim() || !message?.trim()) return res.status(400).json({ error: 'Title and message required' })
     const result = await query(
-      `INSERT INTO broadcasts (title, message, target_plan) VALUES ($1, $2, $3) RETURNING *`,
-      [title.trim(), message.trim(), target_plan || null]
+      `INSERT INTO broadcasts (title, message, target_plan, target_user_id) VALUES ($1, $2, $3, $4) RETURNING *`,
+      [title.trim(), message.trim(), target_plan || null, target_user_id || null]
     )
     res.json(result.rows[0])
   } catch (err) {

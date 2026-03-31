@@ -281,12 +281,27 @@ export async function runMigrations() {
 
     // In-app broadcast messages — admin sends, users see as popup
     `CREATE TABLE IF NOT EXISTS broadcasts (
-      id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      title        TEXT NOT NULL,
-      message      TEXT NOT NULL,
-      target_plan  TEXT,
-      active       BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at   TIMESTAMPTZ DEFAULT NOW()
+      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      title          TEXT NOT NULL,
+      message        TEXT NOT NULL,
+      target_plan    TEXT,
+      target_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      active         BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at     TIMESTAMPTZ DEFAULT NOW()
+    )`,
+    // Add target_user_id to existing broadcasts tables
+    `ALTER TABLE broadcasts ADD COLUMN IF NOT EXISTS target_user_id UUID REFERENCES users(id) ON DELETE SET NULL`,
+
+    // Admin progress backups — snapshot before reset so progress can be restored
+    `CREATE TABLE IF NOT EXISTS user_progress_backups (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      streak_data     JSONB,
+      badges          JSONB,
+      quiz_answers    JSONB,
+      roadmap_data    JSONB,
+      conversations   JSONB,
+      created_at      TIMESTAMPTZ DEFAULT NOW()
     )`,
   ]
 
