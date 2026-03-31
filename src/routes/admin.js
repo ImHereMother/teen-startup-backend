@@ -243,6 +243,36 @@ router.delete('/users/:id', async (req, res) => {
   }
 })
 
+// POST /admin/users/:id/reset-progress
+router.post('/users/:id/reset-progress', async (req, res) => {
+  try {
+    const userId = req.params.id
+    const userCheck = await query('SELECT id FROM users WHERE id = $1', [userId])
+    if (!userCheck.rows[0]) return res.status(404).json({ error: 'User not found' })
+
+    await Promise.all([
+      // Reset streak to zero
+      query(
+        `INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_active)
+         VALUES ($1, 0, 0, NOW())
+         ON CONFLICT (user_id) DO UPDATE SET current_streak = 0, longest_streak = 0, last_active = NOW()`,
+        [userId]
+      ),
+      // Clear all badges
+      query('DELETE FROM user_badges WHERE user_id = $1', [userId]),
+      // Clear quiz answers so onboarding re-triggers
+      query('DELETE FROM quiz_answers WHERE user_id = $1', [userId]),
+      // Reset all roadmap progress
+      query(`UPDATE user_tracked_ideas SET roadmap_data = '{}' WHERE user_id = $1`, [userId]),
+    ])
+
+    res.json({ success: true })
+  } catch (err) {
+    console.error('POST admin/users/:id/reset-progress error:', err)
+    res.status(500).json({ error: 'Failed to reset progress' })
+  }
+})
+
 // GET /admin/events
 router.get('/events', async (req, res) => {
   try {
