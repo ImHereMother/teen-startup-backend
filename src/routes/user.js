@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs'
 import { query } from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { cancelSubscription } from '../stripe.js'
+import { sendTwoFaCode } from '../email.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -747,6 +748,100 @@ router.get('/referral', async (req, res) => {
   } catch (err) {
     console.error('GET /user/referral error:', err)
     res.status(500).json({ error: 'Failed to fetch referral info' })
+  }
+})
+
+// GET /user/2fa/status — is 2FA currently enabled?
+router.get('/2fa/status', async (req, res) => {
+  try {
+    const result = await query('SELECT two_fa_enabled FROM users WHERE id = $1', [req.userId])
+    res.json({ enabled: result.rows[0]?.two_fa_enabled || false })
+  } catch (err) {
+    console.error('GET 2fa/status error:', err)
+    res.status(500).json({ error: 'Failed to get 2FA status' })
+  }
+})
+
+// POST /user/2fa/request — send a code to the user's email to begin enabling 2FA
+router.post('/2fa/request', async (req, res) => {
+  try {
+    const result = await query('SELECT email, two_fa_enabled FROM users WHERE id = $1', [req.userId])
+    const user = result.rows[0]
+    if (!user) return res.status(404).json({ error: 'User not found' })
+    if (user.two_fa_enabled) return res.status(400).json({ error: '2FA is already enabled' })
+
+    const code = String(Math.floor(100000 + Math.random() * 900000))
+    const expires = new Date(Date.now() + 10 * 60 * 1000)
+    await query(
+      'UPDATE users SET two_fa_code = $1, two_fa_code_expires_at = $2 WHERE id = $3',
+      [code, expires, req.userId]
+    )
+    await sendTwoFaCode(user.email, code)
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('POST 2fa/request error:', err)
+    res.status(500).json({ error: 'Failed to send verification code' })
+  }
+})
+
+// POST /user/2fa/enable — verify the code and enable 2FA
+router.post('/2fa/enable', async (req, res) => {
+  try {
+    const { code } = req.body
+    if (!code || typeof code !== 'string') return res.status(400).json({ error: 'code is required' })
+
+    const result = await query(
+      'SELECT two_fa_code, two_fa_code_expires_at, two_fa_enabled FROM users WHERE id = $1',
+      [req.userId]
+    )
+    const user = result.rows[0]
+    if (!user) return res.status(404).json({ error: 'User not found' })
+    if (user.two_fa_enabled) return res.status(400).json({ error: '2FA is already enabled' })
+    if (!user.two_fa_code || user.two_fa_code !== code.trim()) {
+      return res.status(400).json({ error: 'Invalid code' })
+    }
+    if (!user.two_fa_code_expires_at || new Date(user.two_fa_code_expires_at) < new Date()) {
+      return res.status(400).json({ error: 'Code has expired — request a new one' })
+    }
+
+    await query(
+      'UPDATE users SET two_fa_enabled = TRUE, two_fa_code = NULL, two_fa_code_expires_at = NULL WHERE id = $1',
+      [req.userId]
+    )
+    res.json({ ok: true, enabled: true })
+  } catch (err) {
+    console.error('POST 2fa/enable error:', err)
+    res.status(500).json({ error: 'Failed to enable 2FA' })
+  }
+})
+
+// DELETE /user/2fa — disable 2FA (requires current password for account safety)
+router.delete('/2fa', async (req, res) => {
+  try {
+    const { password } = req.body
+    const result = await query(
+      'SELECT password_hash, two_fa_enabled FROM users WHERE id = $1',
+      [req.userId]
+    )
+    const user = result.rows[0]
+    if (!user) return res.status(404).json({ error: 'User not found' })
+    if (!user.two_fa_enabled) return res.status(400).json({ error: '2FA is not enabled' })
+
+    // Password required (unless Google-only account which has no password_hash)
+    if (user.password_hash) {
+      if (!password) return res.status(400).json({ error: 'Password is required to disable 2FA' })
+      const valid = await bcrypt.compare(password, user.password_hash)
+      if (!valid) return res.status(401).json({ error: 'Incorrect password' })
+    }
+
+    await query(
+      'UPDATE users SET two_fa_enabled = FALSE, two_fa_code = NULL, two_fa_code_expires_at = NULL WHERE id = $1',
+      [req.userId]
+    )
+    res.json({ ok: true, enabled: false })
+  } catch (err) {
+    console.error('DELETE 2fa error:', err)
+    res.status(500).json({ error: 'Failed to disable 2FA' })
   }
 })
 

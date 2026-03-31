@@ -80,6 +80,27 @@ app.use('/featured', rateLimit({
   message: { error: 'Too many submissions, please wait' },
 }));
 
+// 2FA verify — 10 / 15 min (brute-force protection)
+app.use('/auth/2fa/verify', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many 2FA attempts, please wait' },
+}));
+
+// 2FA resend — 5 / 15 min (prevent email flooding)
+app.use('/auth/2fa/resend', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many resend requests, please wait' },
+}));
+
+// 2FA enable request (user settings) — 5 / 15 min
+app.use('/user/2fa/request', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many code requests, please wait' },
+}));
+
 app.use('/auth',     authRoutes);
 app.use('/user',     userRoutes);
 app.use('/ai',       aiRoutes);

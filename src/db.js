@@ -259,6 +259,11 @@ export async function runMigrations() {
     // Referral rewards — track pending/applied free-month rewards
     `CREATE TABLE IF NOT EXISTS referral_rewards (\n      id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),\n      user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n      referred_id  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n      status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'applied')),\n      created_at   TIMESTAMPTZ DEFAULT NOW(),\n      UNIQUE (referred_id)\n    )`,
 
+    // 2FA — email-based two-factor authentication
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS two_fa_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS two_fa_code VARCHAR(6)`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS two_fa_code_expires_at TIMESTAMPTZ`,
+
     // MRR zero snapshots — each row is one "zero MRR" operation with undo history
     `CREATE TABLE IF NOT EXISTS mrr_snapshots (
       id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
