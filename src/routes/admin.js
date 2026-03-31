@@ -793,8 +793,8 @@ router.get('/featured', async (req, res) => {
 router.patch('/featured/:id/status', async (req, res) => {
   try {
     const { status } = req.body
-    if (!['pending', 'approved', 'rejected'].includes(status)) {
-      return res.status(400).json({ error: 'status must be pending, approved, or rejected' })
+    if (!['pending', 'approved', 'rejected', 'removed'].includes(status)) {
+      return res.status(400).json({ error: 'status must be pending, approved, rejected, or removed' })
     }
     const result = await query(
       `UPDATE featured_submissions SET status = $1 WHERE id = $2 RETURNING id`,

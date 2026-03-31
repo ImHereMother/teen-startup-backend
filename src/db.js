@@ -265,6 +265,11 @@ export async function runMigrations() {
     `ALTER TABLE users ADD COLUMN IF NOT EXISTS two_fa_code_expires_at TIMESTAMPTZ`,
 
     // MRR zero snapshots — each row is one "zero MRR" operation with undo history
+    // Add 'removed' status to featured_submissions (distinct from 'rejected')
+    // 'rejected' = denied while pending, 'removed' = was in HOF then taken out
+    `ALTER TABLE featured_submissions DROP CONSTRAINT IF EXISTS featured_submissions_status_check`,
+    `ALTER TABLE featured_submissions ADD CONSTRAINT featured_submissions_status_check CHECK (status IN ('pending', 'approved', 'rejected', 'removed'))`,
+
     `CREATE TABLE IF NOT EXISTS mrr_snapshots (
       id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       created_at  TIMESTAMPTZ DEFAULT NOW(),
