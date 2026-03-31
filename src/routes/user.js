@@ -31,7 +31,19 @@ router.get('/profile', async (req, res) => {
 // PATCH /user/profile
 router.patch('/profile', async (req, res) => {
   try {
-    const { display_name, tagline, avatar_url } = req.body
+    let { display_name, tagline, avatar_url } = req.body
+    if (display_name !== undefined && typeof display_name !== 'string') return res.status(400).json({ error: 'Invalid display_name' })
+    if (tagline     !== undefined && typeof tagline     !== 'string') return res.status(400).json({ error: 'Invalid tagline' })
+    if (display_name) display_name = display_name.trim().slice(0, 50)
+    if (tagline)      tagline      = tagline.trim().slice(0, 160)
+    // Only allow http/https avatar URLs; reject anything else
+    if (avatar_url) {
+      try {
+        const u = new URL(avatar_url)
+        if (!['http:', 'https:'].includes(u.protocol)) return res.status(400).json({ error: 'Invalid avatar URL' })
+        avatar_url = avatar_url.slice(0, 500)
+      } catch { return res.status(400).json({ error: 'Invalid avatar URL' }) }
+    }
     const result = await query(
       `UPDATE users SET
          display_name = COALESCE($1, display_name),
@@ -449,11 +461,15 @@ router.post('/earnings', async (req, res) => {
   try {
     const { amount, description, category, date } = req.body
     if (amount === undefined) return res.status(400).json({ error: 'amount is required' })
+    const parsedAmount = parseFloat(amount)
+    if (isNaN(parsedAmount) || parsedAmount < 0 || parsedAmount > 1_000_000) {
+      return res.status(400).json({ error: 'amount must be a number between 0 and 1,000,000' })
+    }
     const id = uuidv4()
     const result = await query(
       `INSERT INTO user_earnings (id, user_id, amount, description, category, date, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING *`,
-      [id, req.userId, amount, description || null, category || null, date || new Date()]
+      [id, req.userId, parsedAmount, (description || '').slice(0, 200) || null, (category || '').slice(0, 50) || null, date || new Date()]
     )
     res.status(201).json(result.rows[0])
   } catch (err) {
@@ -498,12 +514,14 @@ router.get('/tasks', async (req, res) => {
 router.post('/tasks', async (req, res) => {
   try {
     const { title, description, priority, due_date, idea_id } = req.body
-    if (!title) return res.status(400).json({ error: 'title is required' })
+    if (!title || typeof title !== 'string') return res.status(400).json({ error: 'title is required' })
+    const VALID_PRIORITIES = ['low', 'medium', 'high']
+    const safePriority = VALID_PRIORITIES.includes(priority) ? priority : 'medium'
     const id = uuidv4()
     const result = await query(
       `INSERT INTO user_tasks (id, user_id, title, description, status, priority, due_date, idea_id, created_at, updated_at)
        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, NOW(), NOW()) RETURNING *`,
-      [id, req.userId, title, description || null, priority || 'medium', due_date || null, idea_id || null]
+      [id, req.userId, title.slice(0, 200), (description || '').slice(0, 500) || null, safePriority, due_date || null, idea_id || null]
     )
     res.status(201).json(result.rows[0])
   } catch (err) {

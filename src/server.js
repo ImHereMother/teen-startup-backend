@@ -40,10 +40,44 @@ app.use(rateLimit({
   message: { error: 'Too many requests' },
 }));
 
+// Auth — 20 req / 15 min
 app.use('/auth', rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
-  message: { error: 'Too many auth attempts' },
+  message: { error: 'Too many auth attempts, please wait' },
+}));
+
+// Admin login — extra strict: 5 attempts / 15 min
+app.use('/auth/admin-login', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many admin login attempts' },
+}));
+
+// AI chat — 60 requests / min per IP (prevents runaway cost abuse)
+app.use('/ai/chat', rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  message: { error: 'Too many AI requests, slow down' },
+}));
+
+// Sensitive user mutations — 10 / 10 min
+app.use('/user/password', rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many password change attempts' },
+}));
+app.use('/user/plan', rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many plan change requests' },
+}));
+
+// Featured submissions — prevent spam: 5 / hour
+app.use('/featured', rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many submissions, please wait' },
 }));
 
 app.use('/auth',     authRoutes);

@@ -368,14 +368,14 @@ router.post('/admin-login', async (req, res) => {
       return res.status(503).json({ error: 'Admin not configured' })
     }
     if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' })
-    }
-    if (email.toLowerCase() !== adminEmail.toLowerCase()) {
       return res.status(401).json({ error: 'Invalid credentials' })
     }
 
+    // Always run bcrypt.compare regardless of email match — prevents timing-based
+    // enumeration of whether the admin email exists
+    const emailMatch = email.toLowerCase() === adminEmail.toLowerCase()
     const valid = await bcrypt.compare(password, adminHash)
-    if (!valid) {
+    if (!emailMatch || !valid) {
       return res.status(401).json({ error: 'Invalid credentials' })
     }
 
