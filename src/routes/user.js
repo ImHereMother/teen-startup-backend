@@ -84,6 +84,8 @@ router.patch('/password', async (req, res) => {
 
     const newHash = await bcrypt.hash(newPassword, 12)
     await query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.userId])
+    // Invalidate all other sessions so anyone who had access is kicked out
+    await query('DELETE FROM user_sessions WHERE user_id = $1', [req.userId])
     res.json({ success: true })
   } catch (err) {
     console.error('PATCH password error:', err)
