@@ -303,6 +303,17 @@ export async function runMigrations() {
       conversations   JSONB,
       created_at      TIMESTAMPTZ DEFAULT NOW()
     )`,
+
+    // Per-idea ratings (1-5 stars) — one rating per user per idea
+    `CREATE TABLE IF NOT EXISTS idea_ratings (
+      id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      idea_id    INTEGER NOT NULL,
+      rating     SMALLINT NOT NULL CHECK (rating >= 1 AND rating <= 5),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (user_id, idea_id)
+    )`,
   ]
 
   for (const sql of migrations) {

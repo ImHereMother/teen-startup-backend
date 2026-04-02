@@ -845,6 +845,28 @@ router.delete('/2fa', async (req, res) => {
   }
 })
 
+// POST /user/idea-rating — submit or update a 1-5 star rating for a specific business idea
+router.post('/idea-rating', async (req, res) => {
+  try {
+    const { idea_id, rating } = req.body
+    const r = parseInt(rating)
+    if (!idea_id || !r || r < 1 || r > 5) {
+      return res.status(400).json({ error: 'idea_id and rating (1-5) required' })
+    }
+    await query(
+      `INSERT INTO idea_ratings (id, user_id, idea_id, rating)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id, idea_id)
+       DO UPDATE SET rating = $4, updated_at = NOW()`,
+      [uuidv4(), req.userId, idea_id, r]
+    )
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('POST idea-rating error:', err)
+    res.status(500).json({ error: 'Failed to save rating' })
+  }
+})
+
 // GET /user/broadcasts — active broadcasts for this user's plan or targeted directly
 router.get('/broadcasts', async (req, res) => {
   try {

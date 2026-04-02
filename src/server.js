@@ -12,6 +12,7 @@ import stripeRoutes   from './routes/stripe.js';
 import feedbackRoutes  from './routes/feedback.js';
 import featuredRoutes     from './routes/featured.js';
 import leaderboardRoutes  from './routes/leaderboard.js';
+import publicRoutes   from './routes/public.js';
 import { runMigrations } from './db.js';
 
 const app  = express();
@@ -107,6 +108,7 @@ app.use('/ai',       aiRoutes);
 app.use('/admin',    adminRoutes);
 app.use('/stripe',   stripeRoutes);
 app.use('/feedback', feedbackRoutes);
+app.use('/public',   publicRoutes);
 app.use('/featured',    featuredRoutes);
 app.use('/leaderboard', leaderboardRoutes);
 
