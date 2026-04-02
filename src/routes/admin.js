@@ -261,8 +261,8 @@ router.post('/users/:id/reset-progress', async (req, res) => {
     const [streakRow, badgeRows, quizRows, roadmapRows, convRows] = await Promise.all([
       query(`SELECT current_streak, longest_streak, last_active FROM user_streaks WHERE user_id = $1`, [userId]),
       query(`SELECT badge_id, earned_at FROM user_badges WHERE user_id = $1`, [userId]),
-      query(`SELECT question_key, answer FROM quiz_answers WHERE user_id = $1`, [userId]),
-      query(`SELECT idea_id, roadmap_data FROM user_tracked_ideas WHERE user_id = $1`, [userId]),
+      query(`SELECT answers, completed_at FROM quiz_answers WHERE user_id = $1`, [userId]),
+      query(`SELECT idea_id, roadmap_data FROM user_tracked WHERE user_id = $1`, [userId]),
       query(
         `SELECT c.id, c.title, c.created_at,
                 json_agg(m ORDER BY m.created_at) FILTER (WHERE m.id IS NOT NULL) AS messages
@@ -297,7 +297,7 @@ router.post('/users/:id/reset-progress', async (req, res) => {
       ),
       query('DELETE FROM user_badges WHERE user_id = $1', [userId]),
       query('DELETE FROM quiz_answers WHERE user_id = $1', [userId]),
-      query(`UPDATE user_tracked_ideas SET roadmap_data = '{}' WHERE user_id = $1`, [userId]),
+      query(`UPDATE user_tracked SET roadmap_data = '{}' WHERE user_id = $1`, [userId]),
       query('DELETE FROM ai_messages WHERE user_id = $1', [userId]),
       query('DELETE FROM conversations WHERE user_id = $1', [userId]),
     ])
@@ -342,21 +342,23 @@ router.post('/users/:id/restore-progress', async (req, res) => {
       ))
     }
 
-    // Restore quiz answers
+    // Restore quiz answers (single JSONB row per user)
     if (b.quiz_answers?.length) {
-      await Promise.all(b.quiz_answers.map(qa =>
-        query(
-          `INSERT INTO quiz_answers (user_id, question_key, answer) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-          [userId, qa.question_key, qa.answer]
+      const qa = b.quiz_answers[0]
+      if (qa?.answers) {
+        await query(
+          `INSERT INTO quiz_answers (user_id, answers) VALUES ($1, $2)
+           ON CONFLICT (user_id) DO UPDATE SET answers = $2`,
+          [userId, JSON.stringify(qa.answers)]
         )
-      ))
+      }
     }
 
     // Restore roadmap data
     if (b.roadmap_data?.length) {
       await Promise.all(b.roadmap_data.map(rd =>
         query(
-          `INSERT INTO user_tracked_ideas (user_id, idea_id, roadmap_data)
+          `INSERT INTO user_tracked (user_id, idea_id, roadmap_data)
            VALUES ($1, $2, $3)
            ON CONFLICT (user_id, idea_id) DO UPDATE SET roadmap_data = $3`,
           [userId, rd.idea_id, JSON.stringify(rd.roadmap_data)]
