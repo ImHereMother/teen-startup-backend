@@ -80,24 +80,30 @@ router.get('/users', async (req, res) => {
     const sortBy  = SORT_COLS[req.query.sortBy]  || 'u.created_at'
     const sortDir = req.query.sortDir === 'asc'  ? 'ASC' : 'DESC'
 
-    const conditions = []
+    // Build separate conditions + params for list query (has limit/offset as $1/$2)
+    // and count query (no limit/offset) so parameter indices are always correct.
     const listParams  = [limit, offset]
     const countParams = []
+    const listConds   = []
+    const countConds  = []
 
     if (search) {
       listParams.push(`%${search}%`)
+      listConds.push(`(u.email ILIKE $${listParams.length} OR u.display_name ILIKE $${listParams.length})`)
       countParams.push(`%${search}%`)
-      conditions.push(`(u.email ILIKE $${listParams.length} OR u.display_name ILIKE $${listParams.length})`)
+      countConds.push(`(u.email ILIKE $${countParams.length} OR u.display_name ILIKE $${countParams.length})`)
     }
 
     const VALID_PLANS = ['free', 'starter', 'pro']
     if (req.query.plan && VALID_PLANS.includes(req.query.plan)) {
       listParams.push(req.query.plan)
+      listConds.push(`COALESCE(up.plan, 'free') = $${listParams.length}`)
       countParams.push(req.query.plan)
-      conditions.push(`COALESCE(up.plan, 'free') = $${listParams.length}`)
+      countConds.push(`COALESCE(up.plan, 'free') = $${countParams.length}`)
     }
 
-    const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+    const listWhere  = listConds.length  ? `WHERE ${listConds.join(' AND ')}`  : ''
+    const countWhere = countConds.length ? `WHERE ${countConds.join(' AND ')}` : ''
 
     const [users, total] = await Promise.all([
       query(
@@ -106,12 +112,12 @@ router.get('/users', async (req, res) => {
                 EXISTS(SELECT 1 FROM user_progress_backups pb WHERE pb.user_id = u.id) AS has_backup
          FROM users u
          LEFT JOIN user_plans up ON up.user_id = u.id
-         ${whereClause}
+         ${listWhere}
          ORDER BY ${sortBy} ${sortDir} LIMIT $1 OFFSET $2`,
         listParams
       ),
       query(
-        `SELECT COUNT(*) as count FROM users u ${whereClause}`,
+        `SELECT COUNT(*) as count FROM users u LEFT JOIN user_plans up ON up.user_id = u.id ${countWhere}`,
         countParams
       ),
     ])
