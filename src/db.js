@@ -314,6 +314,42 @@ export async function runMigrations() {
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE (user_id, idea_id)
     )`,
+
+    // Password reset tokens — one-time use, 1-hour expiry
+    `CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used       BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+
+    // Email verification tokens — one-time use, 24-hour expiry
+    `CREATE TABLE IF NOT EXISTS email_verification_tokens (
+      id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used       BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
+
+    // Whether the user has verified their email address
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE`,
+
+    // Web push subscriptions — one per device per user
+    `CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      endpoint   TEXT NOT NULL,
+      keys       JSONB NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (user_id, endpoint)
+    )`,
+
+    // Whether user has opted into weekly progress emails
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS weekly_email BOOLEAN NOT NULL DEFAULT TRUE`,
   ]
 
   for (const sql of migrations) {

@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import { v4 as uuidv4 } from 'uuid'
 import { query } from '../db.js'
-import { sendTwoFaCode } from '../email.js'
+import { sendTwoFaCode, sendPasswordResetEmail, sendVerificationEmail } from '../email.js'
 
 const router = Router()
 const JWT_SECRET = process.env.JWT_SECRET
@@ -142,6 +142,18 @@ router.post('/register', async (req, res) => {
 
     const accessToken = generateAccessToken(userId, startingPlan)
     const refreshToken = await generateRefreshToken(userId)
+
+    // Send verification email (non-blocking — don't fail registration if SMTP isn't configured)
+    try {
+      const rawToken = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '')
+      const tokenHash = await bcrypt.hash(rawToken, 10)
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+      await query(
+        `INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
+        [userId, tokenHash, expiresAt]
+      )
+      sendVerificationEmail(email.toLowerCase(), rawToken).catch(() => {})
+    } catch {}
 
     res.status(201).json({ accessToken, refreshToken, userId, plan: startingPlan, referralCode })
   } catch (err) {
@@ -453,6 +465,145 @@ router.post('/logout', async (req, res) => {
   } catch (err) {
     console.error('Logout error:', err)
     res.status(500).json({ error: 'Logout failed' })
+  }
+})
+
+// POST /auth/forgot-password — sends a reset link if the email exists
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body
+    if (!email) return res.status(400).json({ error: 'Email is required' })
+
+    // Always return 200 regardless of whether email exists (prevents user enumeration)
+    const result = await query('SELECT id FROM users WHERE email = $1', [email.toLowerCase()])
+    if (result.rows.length === 0) {
+      return res.json({ ok: true })
+    }
+    const userId = result.rows[0].id
+
+    // Invalidate any existing unused tokens for this user
+    await query(
+      `UPDATE password_reset_tokens SET used = TRUE WHERE user_id = $1 AND used = FALSE`,
+      [userId]
+    )
+
+    // Generate a secure random token
+    const rawToken = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '')
+    const tokenHash = await bcrypt.hash(rawToken, 10)
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000) // 1 hour
+
+    await query(
+      `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
+      [userId, tokenHash, expiresAt]
+    )
+
+    await sendPasswordResetEmail(email.toLowerCase(), rawToken)
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Forgot password error:', err)
+    res.status(500).json({ error: 'Failed to send reset email' })
+  }
+})
+
+// POST /auth/reset-password — set a new password using the reset token
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body
+    if (!token || !password) return res.status(400).json({ error: 'Token and password are required' })
+    if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' })
+
+    // Find all valid (unused, unexpired) tokens and check them
+    const tokens = await query(
+      `SELECT id, user_id, token_hash FROM password_reset_tokens WHERE used = FALSE AND expires_at > NOW()`
+    )
+
+    let matched = null
+    for (const row of tokens.rows) {
+      const ok = await bcrypt.compare(token, row.token_hash)
+      if (ok) { matched = row; break }
+    }
+
+    if (!matched) return res.status(400).json({ error: 'This reset link is invalid or has expired. Please request a new one.' })
+
+    // Hash the new password and update the user
+    const passwordHash = await bcrypt.hash(password, 12)
+    await query(`UPDATE users SET password_hash = $1 WHERE id = $2`, [passwordHash, matched.user_id])
+
+    // Invalidate the token
+    await query(`UPDATE password_reset_tokens SET used = TRUE WHERE id = $1`, [matched.id])
+
+    // Invalidate all active sessions so existing sessions are kicked out
+    await query(`DELETE FROM user_sessions WHERE user_id = $1`, [matched.user_id])
+
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Reset password error:', err)
+    res.status(500).json({ error: 'Failed to reset password' })
+  }
+})
+
+// POST /auth/send-verification — send (or resend) email verification link
+router.post('/send-verification', async (req, res) => {
+  try {
+    const { email } = req.body
+    if (!email) return res.status(400).json({ error: 'Email is required' })
+
+    const result = await query(
+      'SELECT id, email_verified FROM users WHERE email = $1',
+      [email.toLowerCase()]
+    )
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Account not found' })
+    const user = result.rows[0]
+    if (user.email_verified) return res.json({ ok: true, alreadyVerified: true })
+
+    // Invalidate any existing unused tokens
+    await query(
+      `UPDATE email_verification_tokens SET used = TRUE WHERE user_id = $1 AND used = FALSE`,
+      [user.id]
+    )
+
+    const rawToken = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '')
+    const tokenHash = await bcrypt.hash(rawToken, 10)
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours
+
+    await query(
+      `INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
+      [user.id, tokenHash, expiresAt]
+    )
+
+    await sendVerificationEmail(email.toLowerCase(), rawToken)
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Send verification error:', err)
+    res.status(500).json({ error: 'Failed to send verification email' })
+  }
+})
+
+// POST /auth/verify-email — mark email as verified using token from link
+router.post('/verify-email', async (req, res) => {
+  try {
+    const { token } = req.body
+    if (!token) return res.status(400).json({ error: 'Token is required' })
+
+    const tokens = await query(
+      `SELECT id, user_id, token_hash FROM email_verification_tokens WHERE used = FALSE AND expires_at > NOW()`
+    )
+
+    let matched = null
+    for (const row of tokens.rows) {
+      const ok = await bcrypt.compare(token, row.token_hash)
+      if (ok) { matched = row; break }
+    }
+
+    if (!matched) return res.status(400).json({ error: 'This verification link is invalid or has expired.' })
+
+    await query(`UPDATE users SET email_verified = TRUE WHERE id = $1`, [matched.user_id])
+    await query(`UPDATE email_verification_tokens SET used = TRUE WHERE id = $1`, [matched.id])
+
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Verify email error:', err)
+    res.status(500).json({ error: 'Verification failed' })
   }
 })
 

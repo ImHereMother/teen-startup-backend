@@ -3,6 +3,7 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
+import cron from 'node-cron';
 
 import authRoutes     from './routes/auth.js';
 import userRoutes     from './routes/user.js';
@@ -13,7 +14,8 @@ import feedbackRoutes  from './routes/feedback.js';
 import featuredRoutes     from './routes/featured.js';
 import leaderboardRoutes  from './routes/leaderboard.js';
 import publicRoutes   from './routes/public.js';
-import { runMigrations } from './db.js';
+import { runMigrations, query } from './db.js';
+import { sendWeeklyProgressEmail } from './email.js';
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -102,6 +104,20 @@ app.use('/user/2fa/request', rateLimit({
   message: { error: 'Too many code requests, please wait' },
 }));
 
+// Forgot password — 5 requests / 15 min (prevent email flooding)
+app.use('/auth/forgot-password', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many reset requests, please wait' },
+}));
+
+// Email verification sends — 5 / 15 min
+app.use('/auth/send-verification', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many verification requests, please wait' },
+}));
+
 app.use('/auth',     authRoutes);
 app.use('/user',     userRoutes);
 app.use('/ai',       aiRoutes);
@@ -122,6 +138,58 @@ app.use((err, _req, res, _next) => {
 });
 
 runMigrations().catch(err => console.error('Migration error:', err))
+
+/* ── Weekly progress email — every Monday 9 AM UTC ─────── */
+cron.schedule('0 9 * * 1', async () => {
+  console.log('[cron] Running weekly progress email job...')
+  try {
+    // Get all users who haven't opted out, with their latest progress data
+    const users = await query(`
+      SELECT
+        u.id,
+        u.email,
+        u.display_name,
+        COALESCE(us.current_streak, 0)    AS streak,
+        COALESCE(e.total_earnings, 0)     AS total_earnings,
+        COALESCE(t.tasks_completed, 0)    AS tasks_completed
+      FROM users u
+      LEFT JOIN user_streaks us ON us.user_id = u.id
+      LEFT JOIN (
+        SELECT user_id, SUM(amount) AS total_earnings FROM user_earnings GROUP BY user_id
+      ) e ON e.user_id = u.id
+      LEFT JOIN (
+        SELECT user_id, COUNT(*) AS tasks_completed
+        FROM user_tasks WHERE status = 'done'
+          AND updated_at > NOW() - INTERVAL '7 days'
+        GROUP BY user_id
+      ) t ON t.user_id = u.id
+      WHERE u.email IS NOT NULL
+        AND u.weekly_email = TRUE
+        AND u.email_verified = TRUE
+    `)
+
+    let sent = 0
+    let failed = 0
+    for (const row of users.rows) {
+      try {
+        await sendWeeklyProgressEmail(row.email, {
+          displayName:    row.display_name,
+          streak:         Number(row.streak),
+          totalEarnings:  Number(row.total_earnings),
+          tasksCompleted: Number(row.tasks_completed),
+          businessName:   null, // idea names live in the frontend data file
+        })
+        sent++
+      } catch (err) {
+        console.error(`[cron] Failed to send weekly email to ${row.email}:`, err.message)
+        failed++
+      }
+    }
+    console.log(`[cron] Weekly emails: ${sent} sent, ${failed} failed`)
+  } catch (err) {
+    console.error('[cron] Weekly email job failed:', err)
+  }
+})
 
 app.listen(PORT, () => {
   console.log(`Teen Startup API running on port ${PORT}`);

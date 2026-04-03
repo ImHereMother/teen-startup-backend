@@ -892,4 +892,54 @@ router.get('/broadcasts', async (req, res) => {
   }
 })
 
+// POST /user/push-subscription — save a browser push subscription
+router.post('/push-subscription', requireAuth, async (req, res) => {
+  try {
+    const { endpoint, keys } = req.body
+    if (!endpoint || !keys) return res.status(400).json({ error: 'endpoint and keys are required' })
+
+    await query(
+      `INSERT INTO push_subscriptions (user_id, endpoint, keys)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id, endpoint) DO UPDATE SET keys = EXCLUDED.keys`,
+      [req.userId, endpoint, JSON.stringify(keys)]
+    )
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('POST push-subscription error:', err)
+    res.status(500).json({ error: 'Failed to save subscription' })
+  }
+})
+
+// DELETE /user/push-subscription — remove a push subscription
+router.delete('/push-subscription', requireAuth, async (req, res) => {
+  try {
+    const { endpoint } = req.body
+    if (!endpoint) return res.status(400).json({ error: 'endpoint is required' })
+    await query(
+      `DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2`,
+      [req.userId, endpoint]
+    )
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('DELETE push-subscription error:', err)
+    res.status(500).json({ error: 'Failed to remove subscription' })
+  }
+})
+
+// PUT /user/weekly-email — opt in or out of weekly emails
+router.put('/weekly-email', requireAuth, async (req, res) => {
+  try {
+    const { enabled } = req.body
+    await query(
+      `UPDATE users SET weekly_email = $1 WHERE id = $2`,
+      [!!enabled, req.userId]
+    )
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('PUT weekly-email error:', err)
+    res.status(500).json({ error: 'Failed to update preference' })
+  }
+})
+
 export default router
